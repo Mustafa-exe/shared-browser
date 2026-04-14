@@ -114,6 +114,7 @@ let streamSyncRetryTimer = null;
 let streamSyncRetryCount = 0;
 let remoteAudioUnlockBound = false;
 let remoteAudioUnlockHandler = null;
+let remoteFullscreenOrientationLocked = false;
 
 const streamSyncRetryDelayMs = 2800;
 const streamSyncRetryMax = 6;
@@ -167,9 +168,13 @@ function bootstrap() {
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && isRemoteFullscreen) {
-      setRemoteFullscreen(false);
+      void setRemoteFullscreen(false);
     }
   });
+
+  document.addEventListener("fullscreenchange", onDocumentFullscreenChange);
+  window.addEventListener("orientationchange", syncMobileFullscreenLayout);
+  window.addEventListener("resize", syncMobileFullscreenLayout);
 
   setStatus("Connecting...", false);
   setRoleUi();
@@ -2014,21 +2019,114 @@ function setStreamState(text) {
 
 function toggleRemoteFullscreen() {
   if (role === "none") return;
-  setRemoteFullscreen(!isRemoteFullscreen);
+  void setRemoteFullscreen(!isRemoteFullscreen);
 }
 
-function setRemoteFullscreen(nextState) {
+async function setRemoteFullscreen(nextState) {
   isRemoteFullscreen = Boolean(nextState);
-  document.body.classList.toggle("fullscreen-active", isRemoteFullscreen);
-  els.remoteVideoCard.classList.toggle("is-fullscreen", isRemoteFullscreen);
-  els.fullscreenBtn.textContent = isRemoteFullscreen ? "Exit Fullscreen" : "Fullscreen";
-  els.chatToggleBtn.hidden = !isRemoteFullscreen;
-
   if (!isRemoteFullscreen) {
     setChatCollapsed(false);
   }
 
+  if (isRemoteFullscreen) {
+    await enterMobileFullscreenExperience();
+  } else {
+    await exitMobileFullscreenExperience();
+  }
+
+  applyRemoteFullscreenUi();
+}
+
+function applyRemoteFullscreenUi() {
+  document.body.classList.toggle("fullscreen-active", isRemoteFullscreen);
+  els.remoteVideoCard.classList.toggle("is-fullscreen", isRemoteFullscreen);
+  els.fullscreenBtn.textContent = isRemoteFullscreen ? "Exit Fullscreen" : "Fullscreen";
+  els.chatToggleBtn.hidden = !isRemoteFullscreen;
   syncOverlayState();
+  syncMobileFullscreenLayout();
+}
+
+function isMobileViewport() {
+  return window.matchMedia("(max-width: 900px)").matches;
+}
+
+function syncMobileFullscreenLayout() {
+  const useLandscapeLayout =
+    isRemoteFullscreen && isMobileViewport() && window.matchMedia("(orientation: landscape)").matches;
+  document.body.classList.toggle("mobile-landscape-fullscreen", useLandscapeLayout);
+}
+
+function onDocumentFullscreenChange() {
+  const remoteCardIsFullscreen = document.fullscreenElement === els.remoteVideoCard;
+
+  if (isRemoteFullscreen && isMobileViewport() && !remoteCardIsFullscreen) {
+    isRemoteFullscreen = false;
+    setChatCollapsed(false);
+    void unlockLandscapeOrientation();
+  }
+
+  applyRemoteFullscreenUi();
+}
+
+async function enterMobileFullscreenExperience() {
+  if (!isMobileViewport()) return;
+
+  await requestRemoteCardFullscreen();
+  await lockLandscapeOrientation();
+}
+
+async function exitMobileFullscreenExperience() {
+  await unlockLandscapeOrientation();
+
+  if (document.fullscreenElement !== els.remoteVideoCard) return;
+  if (typeof document.exitFullscreen !== "function") return;
+
+  try {
+    await document.exitFullscreen();
+  } catch {
+    // no-op
+  }
+}
+
+async function requestRemoteCardFullscreen() {
+  if (document.fullscreenElement === els.remoteVideoCard) return;
+  if (typeof els.remoteVideoCard.requestFullscreen !== "function") return;
+
+  try {
+    await els.remoteVideoCard.requestFullscreen({ navigationUI: "hide" });
+  } catch {
+    // no-op
+  }
+}
+
+async function lockLandscapeOrientation() {
+  const orientationApi = screen.orientation;
+  if (!orientationApi || typeof orientationApi.lock !== "function") return;
+
+  try {
+    await orientationApi.lock("landscape");
+    remoteFullscreenOrientationLocked = true;
+  } catch {
+    remoteFullscreenOrientationLocked = false;
+  }
+}
+
+async function unlockLandscapeOrientation() {
+  if (!remoteFullscreenOrientationLocked) return;
+
+  const orientationApi = screen.orientation;
+  if (!orientationApi || typeof orientationApi.unlock !== "function") {
+    remoteFullscreenOrientationLocked = false;
+    return;
+  }
+
+  try {
+    orientationApi.unlock();
+  } catch {
+    // no-op
+  }
+
+  remoteFullscreenOrientationLocked = false;
 }
 
 function setChatCollapsed(nextState) {

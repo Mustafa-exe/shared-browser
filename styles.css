@@ -656,3 +656,31 @@ video.can-control:focus {
     font-size: 13px;
   }
 }
+
+@media (max-width: 900px) and (orientation: landscape) {
+  .fullscreen-active.mobile-landscape-fullscreen .remote-card.is-fullscreen {
+    padding-right: calc(min(360px, 42vw) + 12px + env(safe-area-inset-right));
+  }
+
+  .fullscreen-active.mobile-landscape-fullscreen .chat-wrap {
+    top: calc(8px + env(safe-area-inset-top));
+    right: calc(8px + env(safe-area-inset-right));
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    width: min(360px, 42vw);
+    max-height: none;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+  }
+
+  .fullscreen-active.mobile-landscape-fullscreen .chat-wrap .chat-log {
+    min-height: 0;
+    max-height: none;
+    height: 100%;
+  }
+
+  .fullscreen-active.mobile-landscape-fullscreen.chat-open .toast-stack {
+    right: calc(min(360px, 42vw) + 18px + env(safe-area-inset-right));
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    width: min(300px, 36vw);
+  }
+}

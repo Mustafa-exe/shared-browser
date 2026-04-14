@@ -187,6 +187,9 @@ async function joinRoom(nextRole) {
     await leaveRoom({ silent: true });
   }
 
+  setStatus("Connecting...", false);
+  void ensureSocket().catch(() => {});
+
   roomId = nextRoom;
   role = nextRole;
   setRoleUi();
@@ -273,7 +276,7 @@ function ensureSocket() {
 
     const timeoutId = window.setTimeout(() => {
       // Fallback probe: this often works even before .info/connected flips true.
-      get(ref(db, ".info/serverTimeOffset"))
+      withTimeout(get(ref(db, ".info/serverTimeOffset")), 6000, "Realtime probe")
         .then(() => {
           finish(true);
         })
@@ -358,7 +361,7 @@ async function joinRealtimeRoom() {
   try {
     lastRealtimeError = "";
 
-    const metaSnapshot = await get(roomMetaRef);
+    const metaSnapshot = await withTimeout(get(roomMetaRef), 10000, "Load room metadata");
     const meta = (metaSnapshot && metaSnapshot.val()) || {};
     const existingHostId = String(meta.hostId || "");
 
@@ -368,27 +371,45 @@ async function joinRealtimeRoom() {
       return false;
     }
 
-    await set(participantRef, {
-      id: clientId,
-      name: displayName,
-      role,
-      joinedAt: Date.now()
-    });
+    await withTimeout(
+      set(participantRef, {
+        id: clientId,
+        name: displayName,
+        role,
+        joinedAt: Date.now()
+      }),
+      10000,
+      "Register participant"
+    );
 
-    onDisconnect(participantRef).remove();
+    try {
+      const disconnectHandle = onDisconnect(participantRef);
+      void disconnectHandle.remove();
+    } catch {
+      // no-op
+    }
 
     if (role === "host") {
-      await update(roomMetaRef, {
-        hostId: clientId,
-        streamLive: false,
-        controlViewerId: ""
-      });
+      await withTimeout(
+        update(roomMetaRef, {
+          hostId: clientId,
+          streamLive: false,
+          controlViewerId: ""
+        }),
+        10000,
+        "Claim host role"
+      );
 
-      onDisconnect(roomMetaRef).update({
-        hostId: "",
-        streamLive: false,
-        controlViewerId: ""
-      });
+      try {
+        const hostDisconnectHandle = onDisconnect(roomMetaRef);
+        void hostDisconnectHandle.update({
+          hostId: "",
+          streamLive: false,
+          controlViewerId: ""
+        });
+      } catch {
+        // no-op
+      }
     }
 
     joinedAtMs = Date.now();
@@ -401,7 +422,8 @@ async function joinRealtimeRoom() {
       hostId: role === "host" ? clientId : existingHostId
     });
 
-    await publishSystemMessage(`${displayName} joined as ${role}`);
+    // System chat is best-effort and should not block a successful room join.
+    void publishSystemMessage(`${displayName} joined as ${role}`);
     return true;
   } catch (error) {
     console.warn("joinRealtimeRoom failed", error);
@@ -422,19 +444,28 @@ async function leaveRealtimeRoom() {
 
   try {
     if (previousRole === "host" && roomMetaRef) {
-      await update(roomMetaRef, {
-        hostId: "",
-        streamLive: false,
-        controlViewerId: ""
-      });
+      await withTimeout(
+        update(roomMetaRef, {
+          hostId: "",
+          streamLive: false,
+          controlViewerId: ""
+        }),
+        10000,
+        "Release host role"
+      );
     } else if (previousRole === "viewer" && roomMetaRef && previousControlViewerId === clientId) {
-      await update(roomMetaRef, {
-        controlViewerId: ""
-      });
+      await withTimeout(
+        update(roomMetaRef, {
+          controlViewerId: ""
+        }),
+        10000,
+        "Release viewer control"
+      );
     }
 
-    await remove(participantRef);
-    await publishSystemMessage(`${previousName} left`);
+    await withTimeout(remove(participantRef), 10000, "Remove participant");
+
+    void publishSystemMessage(`${previousName} left`);
   } catch (error) {
     console.warn("leaveRealtimeRoom failed", error);
   } finally {
@@ -1873,6 +1904,24 @@ function formatRealtimeError(error) {
   }
 
   return message;
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timeoutId = null;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      reject(new Error(`${label} timed out`));
+    }, Math.max(1000, Number(timeoutMs) || 10000));
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 function sendControlInput(kind, clientX, clientY) {

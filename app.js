@@ -1,3 +1,21 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
+import {
+  getDatabase,
+  ref,
+  set,
+  update,
+  remove,
+  get,
+  push,
+  onValue,
+  onChildAdded,
+  onDisconnect,
+  query,
+  orderByChild,
+  startAt
+} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-database.js";
+import { firebaseConfig } from "./firebase-config.js";
+
 const els = {
   connStatus: document.getElementById("connStatus"),
   roleLabel: document.getElementById("roleLabel"),
@@ -42,12 +60,26 @@ const rtcConfig = {
   ]
 };
 
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
+
 const clientId = createClientId();
 const shareModeStorageKey = "shared_browser_share_mode";
 let displayName = localStorage.getItem("shared_browser_name") || "guest";
 let selectedShareMode = sanitizeShareMode(localStorage.getItem(shareModeStorageKey) || "window");
-let ws = null;
-let wsReadyPromise = null;
+let realtimeReady = false;
+let roomMetaRef = null;
+let participantsRef = null;
+let participantRef = null;
+let eventsRef = null;
+let joinedAtMs = 0;
+let latestParticipants = [];
+let latestMeta = {
+  hostId: "",
+  streamLive: false,
+  controlViewerId: ""
+};
+const roomUnsubscribers = [];
 let roomId = "";
 let role = "none";
 let hostId = "";
@@ -62,6 +94,7 @@ const pendingViewerRequests = new Set();
 let lastControlMoveAt = 0;
 let controlPointerTimer = null;
 let controlCaptureBound = false;
+let controlKeyboardBound = false;
 let viewerParticipants = [];
 
 const peers = new Map();
@@ -133,12 +166,7 @@ function bootstrap() {
     });
 
   window.addEventListener("beforeunload", () => {
-    if (roomId) {
-      send({ type: "leave" });
-    }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.close();
-    }
+    // Firebase onDisconnect handlers clean up participant/meta state.
   });
 }
 
@@ -160,7 +188,7 @@ async function joinRoom(nextRole) {
   try {
     await ensureSocket();
   } catch {
-    alert("Server is offline. Start npm server first.");
+    alert("Realtime backend is offline. Check Firebase config.");
     return;
   }
 
@@ -168,17 +196,14 @@ async function joinRoom(nextRole) {
   role = nextRole;
   setRoleUi();
 
-  const sent = send({
-    type: "join",
-    roomId,
-    clientId,
-    name: displayName,
-    role: nextRole
-  });
-
-  if (!sent) {
+  const joined = await joinRealtimeRoom();
+  if (!joined) {
     setStatus("Disconnected", false);
-    alert("Failed to join. WebSocket not connected.");
+    role = "none";
+    roomId = "";
+    hostId = "";
+    setRoleUi();
+    alert("Failed to join room.");
   }
 }
 
@@ -186,7 +211,7 @@ async function leaveRoom(options = {}) {
   const { silent = false } = options;
 
   if (roomId) {
-    send({ type: "leave" });
+    await leaveRealtimeRoom();
   }
 
   stopShare(false);
@@ -204,7 +229,7 @@ async function leaveRoom(options = {}) {
   setRoleUi();
   setCounts(0, 0);
 
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (realtimeReady) {
     setStatus("Ready", true);
   } else {
     setStatus("Disconnected", false);
@@ -217,94 +242,441 @@ async function leaveRoom(options = {}) {
   }
 }
 
-function wsUrl() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/ws`;
-}
-
 function ensureSocket() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (realtimeReady) {
     return Promise.resolve();
   }
 
-  if (wsReadyPromise) {
-    return wsReadyPromise;
-  }
+  return new Promise((resolve, reject) => {
+    const connectedRef = ref(db, ".info/connected");
+    const timeoutId = window.setTimeout(() => {
+      unsubscribe();
+      reject(new Error("Realtime connection timeout"));
+    }, 10000);
 
-  wsReadyPromise = new Promise((resolve, reject) => {
-    const socket = new WebSocket(wsUrl());
-    ws = socket;
-
-    let settled = false;
-
-    const done = (ok, error) => {
-      if (settled) return;
-      settled = true;
-      if (ok) {
+    const unsubscribe = onValue(
+      connectedRef,
+      (snapshot) => {
+        if (!snapshot.val()) return;
+        realtimeReady = true;
+        clearTimeout(timeoutId);
+        unsubscribe();
+        if (!roomId) {
+          setStatus("Ready", true);
+        }
         resolve();
-      } else {
-        wsReadyPromise = null;
-        reject(error || new Error("WebSocket connection failed"));
+      },
+      (error) => {
+        clearTimeout(timeoutId);
+        unsubscribe();
+        reject(error || new Error("Realtime connection failed"));
       }
-    };
-
-    socket.addEventListener("open", () => {
-      if (!roomId) {
-        setStatus("Ready", true);
-      }
-      done(true);
-    });
-
-    socket.addEventListener("message", async (event) => {
-      let msg;
-      try {
-        msg = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      await handleSocketMessage(msg);
-    });
-
-    socket.addEventListener("close", () => {
-      ws = null;
-      wsReadyPromise = null;
-
-      const hadRoom = Boolean(roomId);
-      if (hadRoom) {
-        stopShare(false);
-        clearAllPeers();
-        clearRemoteVideo();
-        setRemoteFullscreen(false);
-        resetChatIndicators();
-        clearPopups();
-        resetControlState();
-        roomId = "";
-        role = "none";
-        hostId = "";
-        setRoleUi();
-        setCounts(0, 0);
-        setStreamState("Disconnected from server.");
-        renderLocalSystem("Server connection closed.");
-      }
-
-      setStatus("Disconnected", false);
-    });
-
-    socket.addEventListener("error", () => {
-      done(false, new Error("WebSocket error"));
-    });
+    );
   });
-
-  return wsReadyPromise;
 }
 
 function send(payload) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+  if (!payload || typeof payload !== "object") {
     return false;
   }
 
-  ws.send(JSON.stringify(payload));
+  if (!roomId) {
+    return false;
+  }
+
+  void sendRealtimeEvent(payload);
   return true;
+}
+
+function getRoomBasePath() {
+  return roomId ? `rooms/${roomId}` : "";
+}
+
+function bindRoomRefs() {
+  const base = getRoomBasePath();
+  if (!base) return false;
+
+  roomMetaRef = ref(db, `${base}/meta`);
+  participantsRef = ref(db, `${base}/participants`);
+  participantRef = ref(db, `${base}/participants/${clientId}`);
+  eventsRef = ref(db, `${base}/events`);
+  return true;
+}
+
+function clearRoomSubscriptions() {
+  while (roomUnsubscribers.length) {
+    const unsubscribe = roomUnsubscribers.pop();
+    if (typeof unsubscribe !== "function") continue;
+    try {
+      unsubscribe();
+    } catch {
+      // no-op
+    }
+  }
+}
+
+function resetRealtimeRefs() {
+  clearRoomSubscriptions();
+  roomMetaRef = null;
+  participantsRef = null;
+  participantRef = null;
+  eventsRef = null;
+  latestParticipants = [];
+  latestMeta = {
+    hostId: "",
+    streamLive: false,
+    controlViewerId: ""
+  };
+}
+
+async function joinRealtimeRoom() {
+  if (!bindRoomRefs()) {
+    return false;
+  }
+
+  try {
+    const metaSnapshot = await get(roomMetaRef);
+    const meta = (metaSnapshot && metaSnapshot.val()) || {};
+    const existingHostId = String(meta.hostId || "");
+
+    if (role === "host" && existingHostId && existingHostId !== clientId) {
+      renderLocalSystem("Room already has a host.");
+      return false;
+    }
+
+    await set(participantRef, {
+      id: clientId,
+      name: displayName,
+      role,
+      joinedAt: Date.now()
+    });
+
+    onDisconnect(participantRef).remove();
+
+    if (role === "host") {
+      await update(roomMetaRef, {
+        hostId: clientId,
+        streamLive: false,
+        controlViewerId: ""
+      });
+
+      onDisconnect(roomMetaRef).update({
+        hostId: "",
+        streamLive: false,
+        controlViewerId: ""
+      });
+    }
+
+    joinedAtMs = Date.now();
+    subscribeRealtimeRoom();
+
+    await handleSocketMessage({
+      type: "joined",
+      roomId,
+      role,
+      hostId: role === "host" ? clientId : existingHostId
+    });
+
+    await publishSystemMessage(`${displayName} joined as ${role}`);
+    return true;
+  } catch (error) {
+    console.warn("joinRealtimeRoom failed", error);
+    return false;
+  }
+}
+
+async function leaveRealtimeRoom() {
+  if (!roomId || !participantRef) {
+    resetRealtimeRefs();
+    return;
+  }
+
+  const previousRole = role;
+  const previousControlViewerId = controlViewerId;
+  const previousName = displayName;
+
+  try {
+    if (previousRole === "host" && roomMetaRef) {
+      await update(roomMetaRef, {
+        hostId: "",
+        streamLive: false,
+        controlViewerId: ""
+      });
+    } else if (previousRole === "viewer" && roomMetaRef && previousControlViewerId === clientId) {
+      await update(roomMetaRef, {
+        controlViewerId: ""
+      });
+    }
+
+    await remove(participantRef);
+    await publishSystemMessage(`${previousName} left`);
+  } catch (error) {
+    console.warn("leaveRealtimeRoom failed", error);
+  } finally {
+    resetRealtimeRefs();
+  }
+}
+
+function subscribeRealtimeRoom() {
+  clearRoomSubscriptions();
+
+  if (!participantsRef || !roomMetaRef || !eventsRef) {
+    return;
+  }
+
+  const participantsUnsub = onValue(participantsRef, (snapshot) => {
+    latestParticipants = Object.values(snapshot.val() || {});
+    emitPresenceSnapshot();
+  });
+
+  const metaUnsub = onValue(roomMetaRef, async (snapshot) => {
+    latestMeta = snapshot.val() || {};
+    emitPresenceSnapshot();
+
+    // If controller left unexpectedly, host clears stale control lock.
+    if (role === "host") {
+      const activeControllerId = String(latestMeta.controlViewerId || "");
+      if (!activeControllerId) return;
+
+      const controllerExists = latestParticipants.some(
+        (participant) => participant && participant.id === activeControllerId && participant.role === "viewer"
+      );
+
+      if (!controllerExists && roomMetaRef) {
+        await update(roomMetaRef, { controlViewerId: "" });
+      }
+    }
+  });
+
+  const eventsQuery = query(eventsRef, orderByChild("ts"), startAt(joinedAtMs - 2000));
+  const eventsUnsub = onChildAdded(eventsQuery, (snapshot) => {
+    const event = snapshot.val();
+    void handleRealtimeEvent(event);
+  });
+
+  roomUnsubscribers.push(participantsUnsub, metaUnsub, eventsUnsub);
+}
+
+function emitPresenceSnapshot() {
+  const participants = Array.isArray(latestParticipants) ? latestParticipants : [];
+  const sanitizedParticipants = participants
+    .filter((participant) => participant && participant.id)
+    .map((participant) => ({
+      id: participant.id,
+      name: participant.name || "guest",
+      role: participant.role === "host" ? "host" : "viewer"
+    }));
+
+  const hostFromMeta = String(latestMeta?.hostId || "");
+  const streamLive = Boolean(latestMeta?.streamLive);
+  const controlViewerId = String(latestMeta?.controlViewerId || "");
+  const controlViewerName = controlViewerId
+    ? sanitizedParticipants.find((participant) => participant.id === controlViewerId)?.name || ""
+    : "";
+  const viewerCount = sanitizedParticipants.filter((participant) => participant.role === "viewer").length;
+
+  void handleSocketMessage({
+    type: "presence",
+    roomId,
+    hostId: hostFromMeta,
+    streamLive,
+    controlViewerId,
+    controlViewerName,
+    participants: sanitizedParticipants,
+    viewerCount,
+    onlineCount: sanitizedParticipants.length
+  });
+}
+
+async function handleRealtimeEvent(event) {
+  if (!event || typeof event !== "object") return;
+
+  const eventTs = Number(event.ts || 0);
+  if (eventTs && eventTs < joinedAtMs - 2000) {
+    return;
+  }
+
+  if (event.targetId && event.targetId !== clientId) {
+    return;
+  }
+
+  if (event.type === "signal") {
+    await handleSocketMessage({
+      type: "signal",
+      fromId: event.fromId || "",
+      signal: event.signal || null
+    });
+    return;
+  }
+
+  await handleSocketMessage(event);
+}
+
+async function publishSystemMessage(text) {
+  if (!eventsRef || !text) return;
+
+  await push(eventsRef, {
+    type: "chat",
+    fromId: "system",
+    name: "system",
+    text,
+    ts: Date.now(),
+    system: true
+  });
+}
+
+async function sendRealtimeEvent(payload) {
+  if (!eventsRef) return;
+
+  try {
+    if (payload.type === "chat") {
+      await push(eventsRef, {
+        type: "chat",
+        fromId: clientId,
+        name: displayName,
+        text: String(payload.text || "").slice(0, 400),
+        ts: Date.now(),
+        system: false
+      });
+      return;
+    }
+
+    if (payload.type === "signal") {
+      const targetId = String(payload.targetId || "").trim();
+      if (!targetId || !payload.signal) return;
+
+      await push(eventsRef, {
+        type: "signal",
+        fromId: clientId,
+        targetId,
+        signal: payload.signal,
+        ts: Date.now()
+      });
+      return;
+    }
+
+    if (payload.type === "stream-status") {
+      if (role !== "host" || !roomMetaRef) return;
+
+      const live = Boolean(payload.live);
+      await update(roomMetaRef, {
+        streamLive: live
+      });
+
+      await push(eventsRef, {
+        type: "stream-status",
+        fromId: clientId,
+        live,
+        ts: Date.now()
+      });
+      return;
+    }
+
+    if (payload.type === "control-request") {
+      if (role !== "viewer" || !hostId) return;
+
+      await push(eventsRef, {
+        type: "control-request",
+        fromId: clientId,
+        targetId: hostId,
+        name: displayName,
+        ts: Date.now()
+      });
+      return;
+    }
+
+    if (payload.type === "control-response") {
+      if (role !== "host" || !roomMetaRef) return;
+
+      const targetId = String(payload.targetId || "").trim();
+      if (!targetId) return;
+
+      const viewerName = participantNames.get(targetId) || "viewer";
+      const granted = Boolean(payload.granted);
+
+      if (granted) {
+        await update(roomMetaRef, {
+          controlViewerId: targetId
+        });
+
+        await push(eventsRef, {
+          type: "control-status",
+          granted: true,
+          viewerId: targetId,
+          viewerName,
+          byId: clientId,
+          byName: displayName,
+          ts: Date.now()
+        });
+      } else {
+        await push(eventsRef, {
+          type: "control-denied",
+          targetId,
+          viewerId: targetId,
+          viewerName,
+          byId: clientId,
+          byName: displayName,
+          ts: Date.now()
+        });
+      }
+      return;
+    }
+
+    if (payload.type === "control-revoke") {
+      if (role !== "host" || !roomMetaRef || !controlViewerId) return;
+
+      const releasedId = controlViewerId;
+      const releasedName = participantNames.get(releasedId) || controlViewerName || "viewer";
+
+      await update(roomMetaRef, {
+        controlViewerId: ""
+      });
+
+      await push(eventsRef, {
+        type: "control-status",
+        granted: false,
+        viewerId: releasedId,
+        viewerName: releasedName,
+        byId: clientId,
+        byName: displayName,
+        ts: Date.now()
+      });
+      return;
+    }
+
+    if (payload.type === "control-release") {
+      if (role !== "viewer" || !roomMetaRef || controlViewerId !== clientId) return;
+
+      await update(roomMetaRef, {
+        controlViewerId: ""
+      });
+
+      await push(eventsRef, {
+        type: "control-status",
+        granted: false,
+        viewerId: clientId,
+        viewerName: displayName,
+        byId: clientId,
+        byName: displayName,
+        ts: Date.now()
+      });
+      return;
+    }
+
+    if (payload.type === "control-input") {
+      if (role !== "viewer" || controlViewerId !== clientId) return;
+
+      await push(eventsRef, {
+        type: "control-input",
+        fromId: clientId,
+        name: displayName,
+        input: payload.input,
+        ts: Date.now()
+      });
+    }
+  } catch (error) {
+    console.warn("sendRealtimeEvent failed", error);
+  }
 }
 
 async function handleSocketMessage(msg) {
@@ -959,7 +1331,7 @@ function sendChat() {
   });
 
   if (!ok) {
-    alert("Chat failed. WebSocket is disconnected.");
+    alert("Chat failed. Realtime connection is unavailable.");
     return;
   }
 
@@ -1156,7 +1528,7 @@ function requestControlAccess() {
 
   const ok = send({ type: "control-request" });
   if (!ok) {
-    alert("Control request failed. WebSocket is disconnected.");
+    alert("Control request failed. Realtime connection is unavailable.");
     return;
   }
 
@@ -1311,6 +1683,12 @@ function bindControlCapture() {
   els.remoteVideo.addEventListener("click", onControlClickBlock);
   els.remoteVideo.addEventListener("dblclick", onControlClickBlock);
   els.remoteVideo.addEventListener("contextmenu", onControlClickBlock);
+
+  if (!controlKeyboardBound) {
+    window.addEventListener("keydown", onControlKeyDown, true);
+    controlKeyboardBound = true;
+  }
+
   controlCaptureBound = true;
 }
 
@@ -1322,6 +1700,12 @@ function unbindControlCapture() {
   els.remoteVideo.removeEventListener("click", onControlClickBlock);
   els.remoteVideo.removeEventListener("dblclick", onControlClickBlock);
   els.remoteVideo.removeEventListener("contextmenu", onControlClickBlock);
+
+  if (controlKeyboardBound) {
+    window.removeEventListener("keydown", onControlKeyDown, true);
+    controlKeyboardBound = false;
+  }
+
   controlCaptureBound = false;
 }
 
@@ -1352,6 +1736,68 @@ function onControlClickBlock(event) {
   if (controlViewerId !== clientId || role !== "viewer") return;
   event.preventDefault();
   event.stopPropagation();
+}
+
+function onControlKeyDown(event) {
+  if (controlViewerId !== clientId || role !== "viewer") return;
+
+  const activeEl = document.activeElement;
+  if (
+    activeEl &&
+    (activeEl.tagName === "INPUT" ||
+      activeEl.tagName === "TEXTAREA" ||
+      activeEl.tagName === "SELECT" ||
+      activeEl.isContentEditable)
+  ) {
+    return;
+  }
+
+  const keyLabel = formatControlKey(event);
+  if (!keyLabel) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  send({
+    type: "control-input",
+    input: {
+      kind: "key",
+      key: keyLabel
+    }
+  });
+}
+
+function formatControlKey(event) {
+  if (!event || typeof event.key !== "string") return "";
+  if (event.key === "Dead") return "";
+
+  const base = normalizeControlKey(event.key);
+  if (!base) return "";
+
+  const modifiers = [];
+  if (event.ctrlKey) modifiers.push("Ctrl");
+  if (event.altKey) modifiers.push("Alt");
+  if (event.metaKey) modifiers.push("Meta");
+
+  if (base.length > 1 && event.shiftKey) {
+    modifiers.push("Shift");
+  }
+
+  if (!modifiers.length) {
+    return base;
+  }
+
+  return `${modifiers.join("+")}+${base}`;
+}
+
+function normalizeControlKey(key) {
+  if (key === " ") return "Space";
+  if (key === "Esc") return "Escape";
+  if (key === "ArrowLeft") return "Left";
+  if (key === "ArrowRight") return "Right";
+  if (key === "ArrowUp") return "Up";
+  if (key === "ArrowDown") return "Down";
+  return key;
 }
 
 function keepLiveVideoPlaying(event) {
@@ -1408,6 +1854,13 @@ function handleControlInput(msg) {
   const input = msg?.input;
   if (!input || typeof input !== "object") return;
 
+  if (input.kind === "key") {
+    const key = String(input.key || "").trim();
+    if (!key) return;
+    showControlKeystroke(msg.name || "viewer", key);
+    return;
+  }
+
   const x = Number(input.x);
   const y = Number(input.y);
   const kind = input.kind === "click" ? "click" : "move";
@@ -1461,6 +1914,33 @@ function hideControlPointer(force = false) {
   }
 
   els.controlPointer.hidden = true;
+}
+
+function showControlKeystroke(name, key) {
+  const toast = document.createElement("article");
+  toast.className = "toast";
+
+  const title = document.createElement("div");
+  title.className = "toast-title";
+  title.textContent = `${name} typed`;
+
+  const body = document.createElement("div");
+  body.className = "toast-body";
+  body.textContent = key;
+
+  toast.append(title, body);
+  els.toastStack.appendChild(toast);
+
+  if (els.toastStack.children.length > 4) {
+    els.toastStack.firstElementChild?.remove();
+  }
+
+  window.setTimeout(() => {
+    toast.classList.add("is-out");
+    window.setTimeout(() => {
+      toast.remove();
+    }, 220);
+  }, 2200);
 }
 
 function resetControlState() {

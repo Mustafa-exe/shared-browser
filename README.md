@@ -58,10 +58,7 @@ export const rtcConfig = {
 ```powershell
 cd "c:\Users\2must\Downloads\shared browser"
 npm install
-npx playwright install chrome
 ```
-
-If Chrome channel is unavailable on your machine, backend launch falls back to bundled Chromium.
 
 ## 3) Run locally
 
@@ -73,41 +70,37 @@ npm start
 Then open:
 - `http://localhost:5500`
 
-`localhost` only works for the machine running the server.
+`localhost` only works for your machine.
 
-For other users to join:
-- Same LAN: share `http://<HOST_LAN_IP>:5500` and allow port 5500 in firewall.
-- Different networks: deploy to a public host or use a tunnel/reverse proxy, then share that public URL.
+## 3.1) Free deploy via GitHub Pages
+This project now includes a GitHub Pages workflow in `.github/workflows/deploy-pages.yml`.
 
-The cloud WebSocket endpoint (`/cloud`) is same-origin, so viewers must open the same LAN/public origin as the host.
+1. Push to `main` on your GitHub repo.
+2. In GitHub: **Settings -> Pages -> Build and deployment**.
+3. Set Source to **GitHub Actions**.
+4. Wait for workflow **Deploy Static App to GitHub Pages** to complete.
+5. Share your site URL:
+  `https://Mustafa-exe.github.io/shared-browser/`
 
-## 3.1) Public deploy from GitHub (Render)
-This repo now includes `render.yaml`, so you can deploy directly from GitHub.
-
-1. Open: https://render.com/deploy?repo=https://github.com/Mustafa-exe/shared-browser
-2. Sign in to Render and create the service.
-3. Wait for build and deploy to finish.
-4. Share the generated `https://...onrender.com` URL with friends.
-
-After this first setup, every push to `main` auto-deploys.
+Because signaling/chat/presence now run via Firebase Realtime Database, no paid Node hosting is required for production use.
 
 ## 4) Usage
 1. Host opens app, enters room code, clicks **Host Room**.
 2. Viewers open app, enter same room code, click **Join**.
-3. Host clicks **Connect Cloud Browser**.
-4. Host controls the cloud browser with **Cloud Go**, frame clicks, scroll, and typing tools.
-5. Viewers watch the same cloud browser stream in near real time.
-6. Host can choose share mode (**Entire Window**, **Browser Tab**, **Entire Screen**) before starting screen share.
-7. Everyone chats instantly.
-8. A viewer can click **Request Control** to ask host for collaboration access.
-9. Host sees all connected viewers in the **Viewer Access Control** panel and can approve/deny/remove access at any time.
-10. When approved, the viewer can move/click on the stream and both sides see live cursor + click markers to work together.
+3. Host chooses share mode (**Entire Window**, **Browser Tab**, **Entire Screen**) and clicks **Start Screen Share**.
+4. Viewers watch the host stream in near real time.
+5. Everyone chats instantly.
+6. A viewer can click **Request Control** to ask host for collaboration access.
+7. Host sees all connected viewers in the **Viewer Access Control** panel and can approve/deny/remove access at any time.
+8. When approved, the viewer can move/click/type and both sides see live control cues (cursor/click + key actions) for collaboration.
+
+## Control limitation (important)
+Directly controlling another user's OS window/tab from normal browser screen-share is blocked by browser security.
+This app provides collaborative control cues and signaling, but it cannot inject raw mouse/keyboard into arbitrary host desktop apps.
 
 ## Performance notes
 - Chat/presence: Firebase realtime updates.
-- Playback sync: direct peer-to-peer data channels with periodic correction every 700ms while playing.
 - Live view: direct peer-to-peer media stream from host tab to each viewer.
-- Cloud stream: Playwright screenshots pushed over WebSocket.
 - Remaining delay mostly depends on viewer network and browser media buffering.
 
 ## Next upgrades for production quality

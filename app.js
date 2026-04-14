@@ -1221,6 +1221,8 @@ function updateControlCaptureState() {
   const canControl = role === "viewer" && roomId && controlViewerId === clientId;
 
   els.remoteVideo.classList.toggle("can-control", Boolean(canControl));
+  // While collaborating, clicks should be sent as control input, not toggle playback controls.
+  els.remoteVideo.controls = !canControl;
 
   if (canControl) {
     bindControlCapture();
@@ -1234,6 +1236,9 @@ function bindControlCapture() {
 
   els.remoteVideo.addEventListener("pointermove", onControlPointerMove);
   els.remoteVideo.addEventListener("pointerdown", onControlPointerDown);
+  els.remoteVideo.addEventListener("click", onControlClickBlock);
+  els.remoteVideo.addEventListener("dblclick", onControlClickBlock);
+  els.remoteVideo.addEventListener("contextmenu", onControlClickBlock);
   controlCaptureBound = true;
 }
 
@@ -1242,6 +1247,9 @@ function unbindControlCapture() {
 
   els.remoteVideo.removeEventListener("pointermove", onControlPointerMove);
   els.remoteVideo.removeEventListener("pointerdown", onControlPointerDown);
+  els.remoteVideo.removeEventListener("click", onControlClickBlock);
+  els.remoteVideo.removeEventListener("dblclick", onControlClickBlock);
+  els.remoteVideo.removeEventListener("contextmenu", onControlClickBlock);
   controlCaptureBound = false;
 }
 
@@ -1257,7 +1265,21 @@ function onControlPointerMove(event) {
 
 function onControlPointerDown(event) {
   if (controlViewerId !== clientId || role !== "viewer") return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (typeof event.button === "number" && event.button !== 0) {
+    return;
+  }
+
   sendControlInput("click", event.clientX, event.clientY);
+}
+
+function onControlClickBlock(event) {
+  if (controlViewerId !== clientId || role !== "viewer") return;
+  event.preventDefault();
+  event.stopPropagation();
 }
 
 function sendControlInput(kind, clientX, clientY) {

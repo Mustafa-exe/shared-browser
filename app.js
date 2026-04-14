@@ -16,6 +16,7 @@ import {
 import { firebaseConfig } from "./firebase-config.js";
 
 const els = {
+  appRoot: document.querySelector(".app"),
   connStatus: document.getElementById("connStatus"),
   roleLabel: document.getElementById("roleLabel"),
   roomLabel: document.getElementById("roomLabel"),
@@ -2093,9 +2094,12 @@ function syncMobileFullscreenLayout() {
 }
 
 function onDocumentFullscreenChange() {
-  const remoteCardIsFullscreen = document.fullscreenElement === els.remoteVideoCard;
+  const activeFullscreenElement = document.fullscreenElement;
+  const expectedMobileFullscreenElement = getMobileFullscreenElement();
+  const isExpectedFullscreen =
+    activeFullscreenElement === expectedMobileFullscreenElement || activeFullscreenElement === els.remoteVideoCard;
 
-  if (isRemoteFullscreen && isMobileViewport() && !remoteCardIsFullscreen) {
+  if (isRemoteFullscreen && isMobileViewport() && !isExpectedFullscreen) {
     isRemoteFullscreen = false;
     setChatCollapsed(false);
     void unlockLandscapeOrientation();
@@ -2107,14 +2111,21 @@ function onDocumentFullscreenChange() {
 async function enterMobileFullscreenExperience() {
   if (!isMobileViewport()) return;
 
-  await requestRemoteCardFullscreen();
+  await requestMobileFullscreen();
   await lockLandscapeOrientation();
 }
 
 async function exitMobileFullscreenExperience() {
   await unlockLandscapeOrientation();
 
-  if (document.fullscreenElement !== els.remoteVideoCard) return;
+  const activeFullscreenElement = document.fullscreenElement;
+  if (!activeFullscreenElement) return;
+
+  const expectedMobileFullscreenElement = getMobileFullscreenElement();
+  const isExpectedFullscreen =
+    activeFullscreenElement === expectedMobileFullscreenElement || activeFullscreenElement === els.remoteVideoCard;
+  if (!isExpectedFullscreen) return;
+
   if (typeof document.exitFullscreen !== "function") return;
 
   try {
@@ -2124,12 +2135,18 @@ async function exitMobileFullscreenExperience() {
   }
 }
 
-async function requestRemoteCardFullscreen() {
-  if (document.fullscreenElement === els.remoteVideoCard) return;
-  if (typeof els.remoteVideoCard.requestFullscreen !== "function") return;
+function getMobileFullscreenElement() {
+  return els.appRoot || els.remoteVideoCard;
+}
+
+async function requestMobileFullscreen() {
+  const fullscreenElement = getMobileFullscreenElement();
+  if (!fullscreenElement) return;
+  if (document.fullscreenElement === fullscreenElement) return;
+  if (typeof fullscreenElement.requestFullscreen !== "function") return;
 
   try {
-    await els.remoteVideoCard.requestFullscreen({ navigationUI: "hide" });
+    await fullscreenElement.requestFullscreen({ navigationUI: "hide" });
   } catch {
     // no-op
   }

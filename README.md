@@ -39,6 +39,12 @@ This app provides a near real-time shared watch/search experience by combining:
 
 4. Copy `firebase-config.example.js` to `firebase-config.js` and fill credentials.
 
+If hosting/joining shows realtime offline and your database URL returns 404:
+- Open Firebase Console -> Realtime Database.
+- Create the database instance for your project.
+- Copy the exact Realtime Database URL into `firebase-config.js` as `databaseURL`.
+- Ensure rules allow your app reads/writes for the `rooms` path.
+
 5. For better WebRTC success across different networks, add TURN details in `firebase-config.js` (optional but recommended):
 
 ```javascript

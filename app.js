@@ -1984,11 +1984,34 @@ function onControlPointerMove(event) {
 function onControlPointerDown(event) {
   if (controlViewerId !== clientId || role !== "viewer") return;
 
+  const activeEl = document.activeElement;
+  if (
+    activeEl &&
+    activeEl !== els.remoteVideo &&
+    (activeEl.tagName === "INPUT" ||
+      activeEl.tagName === "TEXTAREA" ||
+      activeEl.tagName === "SELECT" ||
+      activeEl.isContentEditable)
+  ) {
+    activeEl.blur?.();
+  }
+
+  try {
+    els.remoteVideo.focus({ preventScroll: true });
+  } catch {
+    els.remoteVideo.focus?.();
+  }
+
   event.preventDefault();
   event.stopPropagation();
 
-  if (typeof event.button === "number" && event.button !== 0) {
-    return;
+  const rect = els.remoteVideo.getBoundingClientRect();
+  if (rect.width > 8 && rect.height > 8) {
+    const x = (event.clientX - rect.left) / rect.width;
+    const y = (event.clientY - rect.top) / rect.height;
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      showControlPointer("click", x, y);
+    }
   }
 
   sendControlInput("click", event.clientX, event.clientY);

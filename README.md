@@ -45,6 +45,9 @@ If hosting/joining shows realtime offline and your database URL returns 404:
 - Copy the exact Realtime Database URL into `firebase-config.js` as `databaseURL`.
 - Ensure rules allow your app reads/writes for the `rooms` path.
 
+Note: Localhost can fall back to the built-in WebSocket server (`npm start`) if Firebase is unavailable.
+For deployed GitHub Pages use, Firebase Realtime Database must be configured correctly.
+
 5. For better WebRTC success across different networks, add TURN details in `firebase-config.js` (optional but recommended):
 
 ```javascript

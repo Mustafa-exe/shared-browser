@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shared Browser Live</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="panel topbar">
+        <div>
+          <p class="eyebrow">Realtime Host + Viewer</p>
+          <h1>Shared Browser Live</h1>
+        </div>
+        <div class="status-line">
+          <span id="connStatus" class="chip is-idle">Offline</span>
+          <span id="roleLabel" class="chip">No Role</span>
+          <span id="roomLabel" class="chip">Room: -</span>
+        </div>
+      </header>
+
+      <section class="panel controls">
+        <h2>Session</h2>
+        <div class="row">
+          <input id="roomInput" type="text" maxlength="24" placeholder="Room code" />
+          <input id="nameInput" type="text" maxlength="24" placeholder="Your name" />
+        </div>
+        <div class="row">
+          <button id="hostBtn" class="btn btn-primary">Host Room</button>
+          <button id="joinBtn" class="btn">Join as Viewer</button>
+          <button id="leaveBtn" class="btn btn-danger">Leave</button>
+        </div>
+
+        <h2>Screen Share</h2>
+        <div class="row">
+          <button id="startShareBtn" class="btn btn-primary">Start Screen Share</button>
+          <button id="stopShareBtn" class="btn btn-danger">Stop Screen Share</button>
+        </div>
+        <p id="streamState" class="helper">Join a room to start.</p>
+      </section>
+
+      <section class="panel videos">
+        <div id="localVideoCard" class="video-card">
+          <h3>Host Preview</h3>
+          <video id="localVideo" autoplay playsinline muted controls></video>
+        </div>
+        <div id="remoteVideoCard" class="video-card remote-card">
+          <div class="video-head">
+            <h3>Viewer Stream</h3>
+            <button id="fullscreenBtn" type="button" class="btn btn-ghost btn-sm">Fullscreen</button>
+          </div>
+          <video id="remoteVideo" autoplay playsinline controls></video>
+        </div>
+      </section>
+
+      <section class="panel chat-wrap">
+        <div class="chat-head">
+          <h2>Chat</h2>
+          <div class="chat-actions">
+            <button id="chatToggleBtn" type="button" class="btn btn-ghost btn-sm" hidden>Minimize</button>
+            <span id="chatUnreadBadge" class="unread-badge" hidden>0</span>
+          </div>
+          <div class="counts">
+            <span id="onlineCount" class="chip">0 online</span>
+            <span id="viewerCount" class="chip">0 viewers</span>
+          </div>
+        </div>
+
+        <div id="chatLog" class="chat-log"></div>
+
+        <form id="chatForm" class="row">
+          <input id="chatInput" type="text" maxlength="400" placeholder="Type message..." />
+          <button type="submit" class="btn btn-primary">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

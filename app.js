@@ -112,6 +112,8 @@ let viewerParticipants = [];
 let hostStreamLive = false;
 let streamSyncRetryTimer = null;
 let streamSyncRetryCount = 0;
+let remoteAudioUnlockBound = false;
+let remoteAudioUnlockHandler = null;
 
 const streamSyncRetryDelayMs = 2800;
 const streamSyncRetryMax = 6;
@@ -129,6 +131,7 @@ function bootstrap() {
   // Live streams should always stay playing and should not expose pause controls.
   els.localVideo.controls = false;
   els.remoteVideo.controls = false;
+  els.remoteVideo.muted = true;
   els.localVideo.addEventListener("pause", keepLiveVideoPlaying);
   els.remoteVideo.addEventListener("pause", keepLiveVideoPlaying);
 
@@ -293,6 +296,7 @@ async function leaveRoom(options = {}) {
   resetChatIndicators();
   clearPopups();
   resetControlState();
+  clearRemoteAudioUnlock();
 
   roomId = "";
   role = "none";
@@ -1230,17 +1234,10 @@ function ensurePeer(peerId, initiator) {
     if (!stream) return;
 
     els.remoteVideo.srcObject = stream;
-    // Keep autoplay reliable for incoming host stream; viewer can unmute via controls.
-    els.remoteVideo.muted = true;
-    const playPromise = els.remoteVideo.play?.();
-    if (playPromise && typeof playPromise.catch === "function") {
-      playPromise.catch(() => {
-        setStreamState("Stream received. Click play if autoplay is blocked.");
-      });
-    }
+    const hasAudio = hasLiveAudioTrack(stream);
+    void playRemoteStreamWithAudio(hasAudio);
 
     clearViewerStreamSyncState();
-    setStreamState("Receiving host stream.");
   });
 
   pc.addEventListener("connectionstatechange", () => {
@@ -1604,7 +1601,14 @@ async function startShare() {
 
     els.localVideo.srcObject = stream;
     els.localVideo.muted = true;
-    setStreamState(`You are live (${shareModeLabel(selectedShareMode)}). Viewers should see your screen.`);
+    const hasAudio = hasLiveAudioTrack(stream);
+    if (hasAudio) {
+      setStreamState(`You are live (${shareModeLabel(selectedShareMode)} + audio). Viewers should see your screen and hear audio.`);
+    } else {
+      setStreamState(
+        `You are live (${shareModeLabel(selectedShareMode)}). Viewers should see your screen. Audio may not be available for this source/browser.`
+      );
+    }
 
     const [videoTrack] = stream.getVideoTracks();
     if (videoTrack) {
@@ -1654,6 +1658,11 @@ async function getDisplayMediaCompat(mode) {
 
 function buildShareConstraintOptions(mode) {
   const frameRate = { frameRate: { ideal: 30, max: 60 } };
+  const screenAudio = {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false
+  };
 
   if (mode === "window") {
     return [
@@ -1662,14 +1671,30 @@ function buildShareConstraintOptions(mode) {
           ...frameRate,
           displaySurface: "window"
         },
-        audio: false,
-        preferCurrentTab: false
+        audio: screenAudio,
+        systemAudio: "include",
+        windowAudio: "system",
+        preferCurrentTab: false,
+        selfBrowserSurface: "exclude"
+      },
+      {
+        video: {
+          ...frameRate,
+          displaySurface: "window"
+        },
+        audio: true,
+        systemAudio: "include"
       },
       {
         video: {
           ...frameRate
         },
-        audio: false
+        audio: true,
+        systemAudio: "include"
+      },
+      {
+        video: true,
+        audio: true
       },
       {
         video: true,
@@ -1685,13 +1710,19 @@ function buildShareConstraintOptions(mode) {
           ...frameRate,
           displaySurface: "monitor"
         },
-        audio: false
+        audio: screenAudio,
+        systemAudio: "include"
       },
       {
         video: {
           ...frameRate
         },
-        audio: false
+        audio: true,
+        systemAudio: "include"
+      },
+      {
+        video: true,
+        audio: true
       },
       {
         video: true,
@@ -1705,7 +1736,8 @@ function buildShareConstraintOptions(mode) {
       video: {
         ...frameRate
       },
-      audio: true,
+      audio: screenAudio,
+      systemAudio: "include",
       preferCurrentTab: true,
       selfBrowserSurface: "include"
     },
@@ -1757,7 +1789,83 @@ function stopShare(notify = true) {
 }
 
 function clearRemoteVideo() {
+  clearRemoteAudioUnlock();
+  els.remoteVideo.muted = true;
   els.remoteVideo.srcObject = null;
+}
+
+function hasLiveAudioTrack(stream = null) {
+  const nextStream = stream || els.remoteVideo.srcObject || localStream;
+  if (!nextStream || typeof nextStream.getAudioTracks !== "function") {
+    return false;
+  }
+
+  return nextStream.getAudioTracks().some((track) => track && track.readyState === "live");
+}
+
+function bindRemoteAudioUnlock() {
+  if (remoteAudioUnlockBound) return;
+
+  remoteAudioUnlockHandler = () => {
+    void playRemoteStreamWithAudio(true, true);
+  };
+
+  window.addEventListener("pointerdown", remoteAudioUnlockHandler, true);
+  window.addEventListener("keydown", remoteAudioUnlockHandler, true);
+  remoteAudioUnlockBound = true;
+}
+
+function clearRemoteAudioUnlock() {
+  if (!remoteAudioUnlockBound || !remoteAudioUnlockHandler) return;
+
+  window.removeEventListener("pointerdown", remoteAudioUnlockHandler, true);
+  window.removeEventListener("keydown", remoteAudioUnlockHandler, true);
+  remoteAudioUnlockBound = false;
+  remoteAudioUnlockHandler = null;
+}
+
+async function playRemoteStreamWithAudio(expectAudio, forceUnmute = false) {
+  if (!els.remoteVideo.srcObject) return;
+
+  if (!expectAudio) {
+    clearRemoteAudioUnlock();
+    els.remoteVideo.muted = true;
+    const playPromise = els.remoteVideo.play?.();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {
+        setStreamState("Stream received. Click play if autoplay is blocked.");
+      });
+      return;
+    }
+
+    setStreamState("Receiving host stream.");
+    return;
+  }
+
+  els.remoteVideo.muted = false;
+  els.remoteVideo.volume = 1;
+
+  const playPromise = els.remoteVideo.play?.();
+  if (playPromise && typeof playPromise.catch === "function") {
+    try {
+      await playPromise;
+      clearRemoteAudioUnlock();
+      setStreamState("Receiving host stream with audio.");
+      return;
+    } catch {
+      els.remoteVideo.muted = true;
+      bindRemoteAudioUnlock();
+      setStreamState(
+        forceUnmute
+          ? "Audio is still blocked by browser policy. Tap again to enable it."
+          : "Receiving host stream. Tap anywhere to enable audio."
+      );
+      return;
+    }
+  }
+
+  clearRemoteAudioUnlock();
+  setStreamState("Receiving host stream with audio.");
 }
 
 function hasRemoteVideoTrack() {

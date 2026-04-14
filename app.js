@@ -2085,15 +2085,10 @@ async function setRemoteFullscreen(nextState) {
 
 function applyRemoteFullscreenUi() {
   const mobileFullscreenMode = isRemoteFullscreen && isMobileViewport();
-  if (mobileFullscreenMode && isChatCollapsed) {
-    setChatCollapsed(false);
-  }
-
   document.body.classList.toggle("fullscreen-active", isRemoteFullscreen);
   els.remoteVideoCard.classList.toggle("is-fullscreen", isRemoteFullscreen);
   els.fullscreenBtn.textContent = isRemoteFullscreen ? "Exit Fullscreen" : "Fullscreen";
-  // Keep chat open and visible on mobile fullscreen so messaging remains usable.
-  els.chatToggleBtn.hidden = !isRemoteFullscreen || mobileFullscreenMode;
+  els.chatToggleBtn.hidden = !isRemoteFullscreen;
   syncOverlayState();
   syncMobileFullscreenLayout();
   updateMobileKeyboardMetrics();

@@ -14,6 +14,8 @@ const els = {
   releaseControlBtn: document.getElementById("releaseControlBtn"),
   revokeControlBtn: document.getElementById("revokeControlBtn"),
   controlState: document.getElementById("controlState"),
+  hostViewerPanel: document.getElementById("hostViewerPanel"),
+  viewerAccessList: document.getElementById("viewerAccessList"),
   localVideoCard: document.getElementById("localVideoCard"),
   remoteVideoCard: document.getElementById("remoteVideoCard"),
   fullscreenBtn: document.getElementById("fullscreenBtn"),
@@ -53,9 +55,11 @@ let unreadMessages = 0;
 let controlViewerId = "";
 let controlViewerName = "";
 let pendingControlRequest = false;
+const pendingViewerRequests = new Set();
 let lastControlMoveAt = 0;
 let controlPointerTimer = null;
 let controlCaptureBound = false;
+let viewerParticipants = [];
 
 const peers = new Map();
 const participantNames = new Map();
@@ -101,6 +105,7 @@ function bootstrap() {
   setStreamState("Join a room to start.");
   updateUnreadBadge();
   updateControlUi();
+  renderViewerAccessList();
 
   ensureSocket()
     .then(() => {
@@ -394,6 +399,14 @@ function syncFromPresence(payload) {
     participantNames.set(participant.id, participant.name || "viewer");
   }
 
+  viewerParticipants = participants.filter((participant) => participant && participant.role === "viewer");
+  for (const requestedId of Array.from(pendingViewerRequests)) {
+    const stillInRoom = viewerParticipants.some((viewer) => viewer.id === requestedId);
+    if (!stillInRoom) {
+      pendingViewerRequests.delete(requestedId);
+    }
+  }
+
   hostId = payload.hostId || "";
 
   const nextControlViewerId = payload.controlViewerId || "";
@@ -408,6 +421,7 @@ function syncFromPresence(payload) {
   }
 
   updateControlUi();
+  renderViewerAccessList();
   updateControlCaptureState();
 
   if (role === "host") {
@@ -922,6 +936,7 @@ function setRoleUi() {
   }
 
   updateControlUi();
+  renderViewerAccessList();
   updateControlCaptureState();
 }
 
@@ -1107,24 +1122,10 @@ function handleControlRequest(msg) {
   if (!requesterId) return;
 
   const requesterName = String(msg?.name || participantNames.get(requesterId) || "viewer");
-  const accepted = window.confirm(
-    `${requesterName} requested control. Allow them to send shared cursor and click actions?`
-  );
-
-  const ok = send({
-    type: "control-response",
-    targetId: requesterId,
-    granted: accepted
-  });
-
-  if (!ok) {
-    alert("Could not send control response.");
-    return;
-  }
-
-  if (!accepted) {
-    renderLocalSystem(`Denied control request from ${requesterName}.`);
-  }
+  pendingViewerRequests.add(requesterId);
+  renderLocalSystem(`${requesterName} requested control access.`);
+  updateControlUi();
+  renderViewerAccessList();
 }
 
 function applyControlStatus(msg) {
@@ -1132,6 +1133,10 @@ function applyControlStatus(msg) {
   const viewerId = String(msg?.viewerId || "");
   const viewerName = String(msg?.viewerName || participantNames.get(viewerId) || "viewer");
   const hadSelfControl = controlViewerId === clientId;
+
+  if (viewerId) {
+    pendingViewerRequests.delete(viewerId);
+  }
 
   if (granted && viewerId) {
     controlViewerId = viewerId;
@@ -1154,6 +1159,7 @@ function applyControlStatus(msg) {
   }
 
   updateControlUi();
+  renderViewerAccessList();
   updateControlCaptureState();
 }
 
@@ -1181,7 +1187,12 @@ function updateControlUi() {
       const name = controlViewerName || participantNames.get(controlViewerId) || "viewer";
       els.controlState.textContent = `${name} currently has control access.`;
     } else {
-      els.controlState.textContent = "No viewer has control access. Approve requests when prompted.";
+      const pendingCount = pendingViewerRequests.size;
+      if (pendingCount > 0) {
+        els.controlState.textContent = `Pending requests: ${pendingCount}. Use the viewer access list below.`;
+      } else {
+        els.controlState.textContent = "No viewer has control access. Use the viewer access list below.";
+      }
     }
     return;
   }
@@ -1336,6 +1347,8 @@ function resetControlState() {
   controlViewerId = "";
   controlViewerName = "";
   pendingControlRequest = false;
+  pendingViewerRequests.clear();
+  viewerParticipants = [];
   lastControlMoveAt = 0;
 
   hideControlPointer(true);
@@ -1343,6 +1356,148 @@ function resetControlState() {
   participantNames.clear();
 
   updateControlUi();
+  renderViewerAccessList();
+}
+
+function grantViewerAccess(viewerId) {
+  if (role !== "host" || !viewerId) return;
+
+  const ok = send({
+    type: "control-response",
+    targetId: viewerId,
+    granted: true
+  });
+
+  if (!ok) {
+    alert("Could not grant control access right now.");
+    return;
+  }
+
+  pendingViewerRequests.delete(viewerId);
+  updateControlUi();
+  renderViewerAccessList();
+}
+
+function denyViewerAccess(viewerId) {
+  if (role !== "host" || !viewerId) return;
+
+  const ok = send({
+    type: "control-response",
+    targetId: viewerId,
+    granted: false
+  });
+
+  if (!ok) {
+    alert("Could not deny request right now.");
+    return;
+  }
+
+  const name = participantNames.get(viewerId) || "viewer";
+  pendingViewerRequests.delete(viewerId);
+  renderLocalSystem(`Denied control request from ${name}.`);
+  updateControlUi();
+  renderViewerAccessList();
+}
+
+function removeViewerAccess(viewerId) {
+  if (role !== "host" || !viewerId) return;
+
+  if (controlViewerId === viewerId) {
+    revokeControlAccess();
+    return;
+  }
+
+  pendingViewerRequests.delete(viewerId);
+  updateControlUi();
+  renderViewerAccessList();
+}
+
+function renderViewerAccessList() {
+  const isHost = role === "host" && Boolean(roomId);
+  els.hostViewerPanel.hidden = !isHost;
+
+  if (!isHost) {
+    els.viewerAccessList.innerHTML = "";
+    return;
+  }
+
+  const viewers = viewerParticipants;
+  if (!viewers.length) {
+    const empty = document.createElement("div");
+    empty.className = "viewer-access-empty";
+    empty.textContent = "No viewers connected yet.";
+    els.viewerAccessList.innerHTML = "";
+    els.viewerAccessList.appendChild(empty);
+    return;
+  }
+
+  els.viewerAccessList.innerHTML = "";
+
+  for (const viewer of viewers) {
+    if (!viewer || !viewer.id) continue;
+
+    const viewerId = viewer.id;
+    const viewerName = viewer.name || "viewer";
+    const hasAccess = viewerId === controlViewerId;
+    const isPending = pendingViewerRequests.has(viewerId);
+
+    const row = document.createElement("div");
+    row.className = "viewer-access-item";
+
+    const meta = document.createElement("div");
+    meta.className = "viewer-access-meta";
+
+    const name = document.createElement("span");
+    name.className = "viewer-access-name";
+    name.textContent = viewerName;
+    meta.appendChild(name);
+
+    if (hasAccess) {
+      const badge = document.createElement("span");
+      badge.className = "viewer-badge is-active";
+      badge.textContent = "Has Access";
+      meta.appendChild(badge);
+    }
+
+    if (isPending) {
+      const badge = document.createElement("span");
+      badge.className = "viewer-badge is-request";
+      badge.textContent = "Request Pending";
+      meta.appendChild(badge);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "viewer-access-actions";
+
+    const grantBtn = document.createElement("button");
+    grantBtn.type = "button";
+    grantBtn.className = "btn btn-primary btn-sm";
+    grantBtn.textContent = hasAccess ? "Access Active" : isPending ? "Approve" : "Give Access";
+    grantBtn.disabled = hasAccess;
+    grantBtn.addEventListener("click", () => grantViewerAccess(viewerId));
+    actions.appendChild(grantBtn);
+
+    if (isPending && !hasAccess) {
+      const denyBtn = document.createElement("button");
+      denyBtn.type = "button";
+      denyBtn.className = "btn btn-danger btn-sm";
+      denyBtn.textContent = "Deny";
+      denyBtn.addEventListener("click", () => denyViewerAccess(viewerId));
+      actions.appendChild(denyBtn);
+    }
+
+    if (hasAccess) {
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "btn btn-danger btn-sm";
+      removeBtn.textContent = "Remove Access";
+      removeBtn.addEventListener("click", () => removeViewerAccess(viewerId));
+      actions.appendChild(removeBtn);
+    }
+
+    row.append(meta, actions);
+    els.viewerAccessList.appendChild(row);
+  }
 }
 
 function sanitizeRoom(value) {

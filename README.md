@@ -100,7 +100,7 @@ After this first setup, every push to `main` auto-deploys.
 6. Optional: Host can still use **Start Chrome Tab Share** for direct tab sharing.
 7. Everyone chats instantly.
 8. A viewer can click **Request Control** to ask host for collaboration access.
-9. Host receives a prompt and can approve or deny that request.
+9. Host sees all connected viewers in the **Viewer Access Control** panel and can approve/deny/remove access at any time.
 10. When approved, the viewer can move/click on the stream and both sides see live cursor + click markers to work together.
 
 ## Performance notes

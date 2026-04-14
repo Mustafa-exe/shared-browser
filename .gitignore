@@ -1,5 +1,4 @@
 node_modules/
-firebase-config.js
 .env
 .env.*
 npm-debug.log*

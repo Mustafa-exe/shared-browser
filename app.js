@@ -162,7 +162,7 @@ function bootstrap() {
     })
     .catch(() => {
       setStatus("Disconnected", false);
-      renderLocalSystem("Could not connect to server.");
+      renderLocalSystem("Could not connect to Firebase realtime backend.");
     });
 
   window.addEventListener("beforeunload", () => {
@@ -187,8 +187,9 @@ async function joinRoom(nextRole) {
 
   try {
     await ensureSocket();
-  } catch {
-    alert("Realtime backend is offline. Check Firebase config.");
+  } catch (err) {
+    const reason = typeof err?.message === "string" ? `\n${err.message}` : "";
+    alert(`Realtime backend is offline. Check Firebase config and database rules.${reason}`);
     return;
   }
 
@@ -248,28 +249,52 @@ function ensureSocket() {
   }
 
   return new Promise((resolve, reject) => {
+    let settled = false;
     const connectedRef = ref(db, ".info/connected");
+
+    const finish = (ok, error) => {
+      if (settled) return;
+      settled = true;
+
+      try {
+        unsubscribe();
+      } catch {
+        // no-op
+      }
+
+      clearTimeout(timeoutId);
+
+      if (ok) {
+        realtimeReady = true;
+        if (!roomId) {
+          setStatus("Ready", true);
+        }
+        resolve();
+        return;
+      }
+
+      reject(error || new Error("Realtime connection failed"));
+    };
+
     const timeoutId = window.setTimeout(() => {
-      unsubscribe();
-      reject(new Error("Realtime connection timeout"));
-    }, 10000);
+      // Fallback probe: this often works even before .info/connected flips true.
+      get(ref(db, ".info/serverTimeOffset"))
+        .then(() => {
+          finish(true);
+        })
+        .catch((probeError) => {
+          finish(false, probeError || new Error("Realtime connection timeout"));
+        });
+    }, 14000);
 
     const unsubscribe = onValue(
       connectedRef,
       (snapshot) => {
         if (!snapshot.val()) return;
-        realtimeReady = true;
-        clearTimeout(timeoutId);
-        unsubscribe();
-        if (!roomId) {
-          setStatus("Ready", true);
-        }
-        resolve();
+        finish(true);
       },
       (error) => {
-        clearTimeout(timeoutId);
-        unsubscribe();
-        reject(error || new Error("Realtime connection failed"));
+        finish(false, error || new Error("Realtime connection failed"));
       }
     );
   });

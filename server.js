@@ -408,6 +408,15 @@ function sanitizeName(value) {
 function sanitizeControlInput(value) {
   if (!value || typeof value !== "object") return null;
 
+  if (value.kind === "key") {
+    const key = String(value.key || "").trim().slice(0, 64);
+    if (!key) return null;
+    return {
+      kind: "key",
+      key
+    };
+  }
+
   const kind = value.kind === "move" || value.kind === "click" ? value.kind : "";
   if (!kind) return null;
 

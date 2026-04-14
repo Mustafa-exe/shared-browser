@@ -67,6 +67,7 @@ const clientId = createClientId();
 const shareModeStorageKey = "shared_browser_share_mode";
 let displayName = localStorage.getItem("shared_browser_name") || "guest";
 let selectedShareMode = sanitizeShareMode(localStorage.getItem(shareModeStorageKey) || "window");
+let transportMode = "firebase";
 let realtimeReady = false;
 let roomMetaRef = null;
 let participantsRef = null;
@@ -80,6 +81,8 @@ let latestMeta = {
   streamLive: false,
   controlViewerId: ""
 };
+let ws = null;
+let wsReadyPromise = null;
 const roomUnsubscribers = [];
 let roomId = "";
 let role = "none";
@@ -168,6 +171,16 @@ function bootstrap() {
     });
 
   window.addEventListener("beforeunload", () => {
+    if (transportMode === "websocket") {
+      if (roomId) {
+        send({ type: "leave" });
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+      return;
+    }
+
     // Firebase onDisconnect handlers clean up participant/meta state.
   });
 }
@@ -194,8 +207,48 @@ async function joinRoom(nextRole) {
   role = nextRole;
   setRoleUi();
 
+  if (transportMode === "websocket") {
+    try {
+      await ensureSocket();
+    } catch {
+      setStatus("Disconnected", false);
+      role = "none";
+      roomId = "";
+      hostId = "";
+      setRoleUi();
+      alert("Local WebSocket connection failed. Make sure npm start is running.");
+      return;
+    }
+
+    const sent = send({
+      type: "join",
+      roomId: nextRoom,
+      clientId,
+      name: displayName,
+      role: nextRole
+    });
+
+    if (!sent) {
+      setStatus("Disconnected", false);
+      role = "none";
+      roomId = "";
+      hostId = "";
+      setRoleUi();
+      alert("Failed to join via local WebSocket.");
+    }
+    return;
+  }
+
   const joined = await joinRealtimeRoom();
   if (!joined) {
+    const shouldFallback = shouldUseLocalWebSocketFallback(lastRealtimeError);
+    if (shouldFallback && canUseLocalWebSocketFallback()) {
+      const fallbackJoined = await tryLocalWebSocketFallback(nextRoom, nextRole);
+      if (fallbackJoined) {
+        return;
+      }
+    }
+
     setStatus("Disconnected", false);
     role = "none";
     roomId = "";
@@ -210,7 +263,11 @@ async function leaveRoom(options = {}) {
   const { silent = false } = options;
 
   if (roomId) {
-    await leaveRealtimeRoom();
+    if (transportMode === "websocket") {
+      send({ type: "leave" });
+    } else {
+      await leaveRealtimeRoom();
+    }
   }
 
   stopShare(false);
@@ -228,7 +285,13 @@ async function leaveRoom(options = {}) {
   setRoleUi();
   setCounts(0, 0);
 
-  if (realtimeReady) {
+  if (transportMode === "websocket") {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      setStatus("Ready", true);
+    } else {
+      setStatus("Disconnected", false);
+    }
+  } else if (realtimeReady) {
     setStatus("Ready", true);
   } else {
     setStatus("Disconnected", false);
@@ -242,6 +305,10 @@ async function leaveRoom(options = {}) {
 }
 
 function ensureSocket() {
+  if (transportMode === "websocket") {
+    return ensureWebSocketConnection();
+  }
+
   if (realtimeReady) {
     return Promise.resolve();
   }
@@ -303,12 +370,151 @@ function send(payload) {
     return false;
   }
 
+  if (transportMode === "websocket") {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    ws.send(JSON.stringify(payload));
+    return true;
+  }
+
   if (!roomId) {
     return false;
   }
 
   void sendRealtimeEvent(payload);
   return true;
+}
+
+function wsUrl() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/ws`;
+}
+
+function ensureWebSocketConnection() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    return Promise.resolve();
+  }
+
+  if (wsReadyPromise) {
+    return wsReadyPromise;
+  }
+
+  wsReadyPromise = new Promise((resolve, reject) => {
+    const socket = new WebSocket(wsUrl());
+    ws = socket;
+
+    let settled = false;
+
+    const done = (ok, error) => {
+      if (settled) return;
+      settled = true;
+      if (ok) {
+        resolve();
+      } else {
+        wsReadyPromise = null;
+        reject(error || new Error("WebSocket connection failed"));
+      }
+    };
+
+    socket.addEventListener("open", () => {
+      if (!roomId) {
+        setStatus("Ready", true);
+      }
+      done(true);
+    });
+
+    socket.addEventListener("message", async (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      await handleSocketMessage(msg);
+    });
+
+    socket.addEventListener("close", () => {
+      ws = null;
+      wsReadyPromise = null;
+
+      const hadRoom = Boolean(roomId);
+      if (hadRoom && transportMode === "websocket") {
+        stopShare(false);
+        clearAllPeers();
+        clearRemoteVideo();
+        setRemoteFullscreen(false);
+        resetChatIndicators();
+        clearPopups();
+        resetControlState();
+        roomId = "";
+        role = "none";
+        hostId = "";
+        setRoleUi();
+        setCounts(0, 0);
+        setStreamState("Disconnected from local server.");
+        renderLocalSystem("Local server connection closed.");
+      }
+
+      if (transportMode === "websocket") {
+        setStatus("Disconnected", false);
+      }
+    });
+
+    socket.addEventListener("error", () => {
+      done(false, new Error("WebSocket error"));
+    });
+  });
+
+  return wsReadyPromise;
+}
+
+function canUseLocalWebSocketFallback() {
+  const host = window.location.hostname;
+  return host === "localhost" || host === "127.0.0.1";
+}
+
+function shouldUseLocalWebSocketFallback(errorText) {
+  const text = String(errorText || "").toLowerCase();
+  if (!text) return false;
+
+  return (
+    text.includes("timed out") ||
+    text.includes("endpoint was not found") ||
+    text.includes("permission") ||
+    text.includes("network") ||
+    text.includes("offline")
+  );
+}
+
+async function tryLocalWebSocketFallback(nextRoom, nextRole) {
+  try {
+    transportMode = "websocket";
+    resetRealtimeRefs();
+    realtimeReady = false;
+
+    await ensureSocket();
+
+    const sent = send({
+      type: "join",
+      roomId: nextRoom,
+      clientId,
+      name: displayName,
+      role: nextRole
+    });
+
+    if (!sent) {
+      throw new Error("Could not send join event over local WebSocket.");
+    }
+
+    renderLocalSystem("Firebase unavailable, using local server fallback.");
+    return true;
+  } catch (error) {
+    transportMode = "firebase";
+    lastRealtimeError = `${lastRealtimeError}\nLocal fallback failed: ${String(error?.message || error)}`;
+    return false;
+  }
 }
 
 function getRoomBasePath() {

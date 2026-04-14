@@ -113,7 +113,8 @@ h3 {
   flex-wrap: wrap;
 }
 
-input {
+input,
+select {
   flex: 1;
   min-width: 180px;
   background: #0a1329;
@@ -124,7 +125,8 @@ input {
   font-size: 14px;
 }
 
-input:focus {
+input:focus,
+select:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.2);
@@ -566,6 +568,7 @@ video.can-control {
   }
 
   input,
+  select,
   .btn {
     width: 100%;
     min-width: 0;

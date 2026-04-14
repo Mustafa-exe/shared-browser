@@ -97,7 +97,7 @@ After this first setup, every push to `main` auto-deploys.
 3. Host clicks **Connect Cloud Browser**.
 4. Host controls the cloud browser with **Cloud Go**, frame clicks, scroll, and typing tools.
 5. Viewers watch the same cloud browser stream in near real time.
-6. Optional: Host can still use **Start Chrome Tab Share** for direct tab sharing.
+6. Host can choose share mode (**Entire Window**, **Browser Tab**, **Entire Screen**) before starting screen share.
 7. Everyone chats instantly.
 8. A viewer can click **Request Control** to ask host for collaboration access.
 9. Host sees all connected viewers in the **Viewer Access Control** panel and can approve/deny/remove access at any time.

@@ -7,6 +7,7 @@ const els = {
   hostBtn: document.getElementById("hostBtn"),
   joinBtn: document.getElementById("joinBtn"),
   leaveBtn: document.getElementById("leaveBtn"),
+  shareModeSelect: document.getElementById("shareModeSelect"),
   startShareBtn: document.getElementById("startShareBtn"),
   stopShareBtn: document.getElementById("stopShareBtn"),
   streamState: document.getElementById("streamState"),
@@ -42,7 +43,9 @@ const rtcConfig = {
 };
 
 const clientId = createClientId();
+const shareModeStorageKey = "shared_browser_share_mode";
 let displayName = localStorage.getItem("shared_browser_name") || "guest";
+let selectedShareMode = sanitizeShareMode(localStorage.getItem(shareModeStorageKey) || "window");
 let ws = null;
 let wsReadyPromise = null;
 let roomId = "";
@@ -68,6 +71,13 @@ bootstrap();
 
 function bootstrap() {
   els.nameInput.value = displayName;
+  els.shareModeSelect.value = selectedShareMode;
+
+  // Live streams should always stay playing and should not expose pause controls.
+  els.localVideo.controls = false;
+  els.remoteVideo.controls = false;
+  els.localVideo.addEventListener("pause", keepLiveVideoPlaying);
+  els.remoteVideo.addEventListener("pause", keepLiveVideoPlaying);
 
   els.hostBtn.addEventListener("click", () => joinRoom("host"));
   els.joinBtn.addEventListener("click", () => joinRoom("viewer"));
@@ -91,6 +101,12 @@ function bootstrap() {
     displayName = sanitizeName(els.nameInput.value || "guest");
     els.nameInput.value = displayName;
     localStorage.setItem("shared_browser_name", displayName);
+  });
+
+  els.shareModeSelect.addEventListener("change", () => {
+    selectedShareMode = sanitizeShareMode(els.shareModeSelect.value || "window");
+    els.shareModeSelect.value = selectedShareMode;
+    localStorage.setItem(shareModeStorageKey, selectedShareMode);
   });
 
   document.addEventListener("keydown", (event) => {
@@ -768,12 +784,15 @@ async function startShare() {
   }
 
   try {
-    const stream = await getDisplayMediaCompat();
+    selectedShareMode = sanitizeShareMode(els.shareModeSelect.value || selectedShareMode);
+    els.shareModeSelect.value = selectedShareMode;
+
+    const stream = await getDisplayMediaCompat(selectedShareMode);
     localStream = stream;
 
     els.localVideo.srcObject = stream;
     els.localVideo.muted = true;
-    setStreamState("You are live. Viewers should see your screen.");
+    setStreamState(`You are live (${shareModeLabel(selectedShareMode)}). Viewers should see your screen.`);
 
     const [videoTrack] = stream.getVideoTracks();
     if (videoTrack) {
@@ -796,27 +815,12 @@ async function startShare() {
   }
 }
 
-async function getDisplayMediaCompat() {
+async function getDisplayMediaCompat(mode) {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     throw new Error("Screen sharing is not supported in this browser.");
   }
 
-  const options = [
-    {
-      video: { frameRate: { ideal: 30, max: 60 } },
-      audio: true,
-      preferCurrentTab: true,
-      selfBrowserSurface: "include"
-    },
-    {
-      video: { frameRate: { ideal: 30, max: 60 } },
-      audio: true
-    },
-    {
-      video: true,
-      audio: false
-    }
-  ];
+  const options = buildShareConstraintOptions(sanitizeShareMode(mode));
 
   let lastError = null;
 
@@ -832,6 +836,76 @@ async function getDisplayMediaCompat() {
   }
 
   throw lastError || new Error("Could not start screen share.");
+}
+
+function buildShareConstraintOptions(mode) {
+  const frameRate = { frameRate: { ideal: 30, max: 60 } };
+
+  if (mode === "window") {
+    return [
+      {
+        video: {
+          ...frameRate,
+          displaySurface: "window"
+        },
+        audio: false,
+        preferCurrentTab: false
+      },
+      {
+        video: {
+          ...frameRate
+        },
+        audio: false
+      },
+      {
+        video: true,
+        audio: false
+      }
+    ];
+  }
+
+  if (mode === "screen") {
+    return [
+      {
+        video: {
+          ...frameRate,
+          displaySurface: "monitor"
+        },
+        audio: false
+      },
+      {
+        video: {
+          ...frameRate
+        },
+        audio: false
+      },
+      {
+        video: true,
+        audio: false
+      }
+    ];
+  }
+
+  return [
+    {
+      video: {
+        ...frameRate
+      },
+      audio: true,
+      preferCurrentTab: true,
+      selfBrowserSurface: "include"
+    },
+    {
+      video: {
+        ...frameRate
+      },
+      audio: true
+    },
+    {
+      video: true,
+      audio: false
+    }
+  ];
 }
 
 function stopShare(notify = true) {
@@ -1221,8 +1295,6 @@ function updateControlCaptureState() {
   const canControl = role === "viewer" && roomId && controlViewerId === clientId;
 
   els.remoteVideo.classList.toggle("can-control", Boolean(canControl));
-  // While collaborating, clicks should be sent as control input, not toggle playback controls.
-  els.remoteVideo.controls = !canControl;
 
   if (canControl) {
     bindControlCapture();
@@ -1280,6 +1352,32 @@ function onControlClickBlock(event) {
   if (controlViewerId !== clientId || role !== "viewer") return;
   event.preventDefault();
   event.stopPropagation();
+}
+
+function keepLiveVideoPlaying(event) {
+  const video = event.currentTarget;
+  if (!video || !video.srcObject) return;
+
+  const playPromise = video.play?.();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(() => {
+      // If browser blocks autoplay, user interaction is required.
+    });
+  }
+}
+
+function sanitizeShareMode(value) {
+  const next = String(value || "window").toLowerCase();
+  if (next === "tab" || next === "window" || next === "screen") {
+    return next;
+  }
+  return "window";
+}
+
+function shareModeLabel(mode) {
+  if (mode === "tab") return "tab share";
+  if (mode === "screen") return "entire screen share";
+  return "window share";
 }
 
 function sendControlInput(kind, clientX, clientY) {

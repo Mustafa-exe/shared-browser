@@ -81,6 +81,16 @@ For other users to join:
 
 The cloud WebSocket endpoint (`/cloud`) is same-origin, so viewers must open the same LAN/public origin as the host.
 
+## 3.1) Public deploy from GitHub (Render)
+This repo now includes `render.yaml`, so you can deploy directly from GitHub.
+
+1. Open: https://render.com/deploy?repo=https://github.com/Mustafa-exe/shared-browser
+2. Sign in to Render and create the service.
+3. Wait for build and deploy to finish.
+4. Share the generated `https://...onrender.com` URL with friends.
+
+After this first setup, every push to `main` auto-deploys.
+
 ## 4) Usage
 1. Host opens app, enters room code, clicks **Host Room**.
 2. Viewers open app, enter same room code, click **Join**.

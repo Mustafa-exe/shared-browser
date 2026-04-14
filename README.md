@@ -48,6 +48,12 @@ If hosting/joining shows realtime offline and your database URL returns 404:
 Note: Localhost can fall back to the built-in WebSocket server (`npm start`) if Firebase is unavailable.
 For deployed GitHub Pages use, Firebase Realtime Database must be configured correctly.
 
+Temporary workaround before Firebase is fixed:
+- Run local server with `npm start`.
+- Expose it using a free tunnel (for example Cloudflare Tunnel) and share that URL.
+- Host and viewers should open the same tunnel URL; the app will use same-origin `/ws` fallback transport.
+- GitHub Pages URL cannot use this fallback because it does not host `/ws`.
+
 5. For better WebRTC success across different networks, add TURN details in `firebase-config.js` (optional but recommended):
 
 ```javascript

@@ -471,8 +471,15 @@ function ensureWebSocketConnection() {
 }
 
 function canUseLocalWebSocketFallback() {
-  const host = window.location.hostname;
-  return host === "localhost" || host === "127.0.0.1";
+  const host = String(window.location.hostname || "").toLowerCase();
+
+  // GitHub Pages cannot serve the /ws endpoint, so fallback is impossible there.
+  if (host.endsWith("github.io")) {
+    return false;
+  }
+
+  // Any other same-origin host (localhost, LAN IP, tunnel domain, VPS) can use /ws fallback.
+  return true;
 }
 
 function shouldUseLocalWebSocketFallback(errorText) {

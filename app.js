@@ -73,6 +73,7 @@ let participantsRef = null;
 let participantRef = null;
 let eventsRef = null;
 let joinedAtMs = 0;
+let lastRealtimeError = "";
 let latestParticipants = [];
 let latestMeta = {
   hostId: "",
@@ -160,9 +161,10 @@ function bootstrap() {
     .then(() => {
       if (!roomId) setStatus("Ready", true);
     })
-    .catch(() => {
+    .catch((error) => {
       setStatus("Disconnected", false);
-      renderLocalSystem("Could not connect to Firebase realtime backend.");
+      const details = formatRealtimeError(error);
+      renderLocalSystem(`Could not connect to Firebase realtime backend. ${details}`);
     });
 
   window.addEventListener("beforeunload", () => {
@@ -185,14 +187,6 @@ async function joinRoom(nextRole) {
     await leaveRoom({ silent: true });
   }
 
-  try {
-    await ensureSocket();
-  } catch (err) {
-    const reason = typeof err?.message === "string" ? `\n${err.message}` : "";
-    alert(`Realtime backend is offline. Check Firebase config and database rules.${reason}`);
-    return;
-  }
-
   roomId = nextRoom;
   role = nextRole;
   setRoleUi();
@@ -204,7 +198,8 @@ async function joinRoom(nextRole) {
     roomId = "";
     hostId = "";
     setRoleUi();
-    alert("Failed to join room.");
+    const reason = lastRealtimeError ? `\n\n${lastRealtimeError}` : "";
+    alert(`Failed to join room.${reason}`);
   }
 }
 
@@ -356,16 +351,20 @@ function resetRealtimeRefs() {
 
 async function joinRealtimeRoom() {
   if (!bindRoomRefs()) {
+    lastRealtimeError = "Invalid room path.";
     return false;
   }
 
   try {
+    lastRealtimeError = "";
+
     const metaSnapshot = await get(roomMetaRef);
     const meta = (metaSnapshot && metaSnapshot.val()) || {};
     const existingHostId = String(meta.hostId || "");
 
     if (role === "host" && existingHostId && existingHostId !== clientId) {
       renderLocalSystem("Room already has a host.");
+      lastRealtimeError = "Room already has a host.";
       return false;
     }
 
@@ -406,6 +405,7 @@ async function joinRealtimeRoom() {
     return true;
   } catch (error) {
     console.warn("joinRealtimeRoom failed", error);
+    lastRealtimeError = formatRealtimeError(error);
     return false;
   }
 }
@@ -1849,6 +1849,30 @@ function shareModeLabel(mode) {
   if (mode === "tab") return "tab share";
   if (mode === "screen") return "entire screen share";
   return "window share";
+}
+
+function formatRealtimeError(error) {
+  const message = String(error?.message || error?.code || "Unknown realtime error");
+  const lowered = message.toLowerCase();
+
+  if (lowered.includes("404") || lowered.includes("not found")) {
+    return (
+      "Firebase Realtime Database endpoint was not found (404). " +
+      "Open Firebase Console -> Realtime Database, create the database, then copy the exact databaseURL into firebase-config.js."
+    );
+  }
+
+  if (lowered.includes("permission") || lowered.includes("denied")) {
+    return (
+      "Firebase rules blocked access. Update Realtime Database rules to allow this app's read/write access."
+    );
+  }
+
+  if (lowered.includes("offline") || lowered.includes("network")) {
+    return "Network/realtime connection issue. Check internet access and Firebase project status.";
+  }
+
+  return message;
 }
 
 function sendControlInput(kind, clientX, clientY) {

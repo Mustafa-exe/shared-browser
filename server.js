@@ -253,6 +253,23 @@ wss.on("connection", (ws) => {
         fromId: sender.id
       });
       broadcastPresence(roomId);
+      return;
+    }
+
+    if (msg.type === "stream-retry") {
+      if (sender.role !== "viewer") return;
+      if (!room.hostId) return;
+
+      const host = room.clients.get(room.hostId);
+      if (!host) return;
+
+      safeSend(host.ws, {
+        type: "stream-retry",
+        fromId: sender.id,
+        name: sender.name,
+        targetId: host.id,
+        ts: Date.now()
+      });
     }
   });
 

@@ -56,7 +56,17 @@ const els = {
 const rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" }
+    { urls: "stun:stun1.l.google.com:19302" },
+    {
+      urls: [
+        "stun:openrelay.metered.ca:80",
+        "turn:openrelay.metered.ca:80",
+        "turn:openrelay.metered.ca:443",
+        "turn:openrelay.metered.ca:443?transport=tcp"
+      ],
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    }
   ]
 };
 
@@ -100,6 +110,12 @@ let controlPointerTimer = null;
 let controlCaptureBound = false;
 let controlKeyboardBound = false;
 let viewerParticipants = [];
+let hostStreamLive = false;
+let streamSyncRetryTimer = null;
+let streamSyncRetryCount = 0;
+
+const streamSyncRetryDelayMs = 2800;
+const streamSyncRetryMax = 6;
 
 const peers = new Map();
 const participantNames = new Map();
@@ -281,6 +297,8 @@ async function leaveRoom(options = {}) {
   roomId = "";
   role = "none";
   hostId = "";
+  hostStreamLive = false;
+  clearViewerStreamSyncState();
 
   setRoleUi();
   setCounts(0, 0);
@@ -932,6 +950,22 @@ async function sendRealtimeEvent(payload) {
       return;
     }
 
+    if (payload.type === "stream-retry") {
+      if (role !== "viewer" || !hostId) return;
+
+      const targetId = String(payload.targetId || hostId).trim();
+      if (!targetId) return;
+
+      await push(eventsRef, {
+        type: "stream-retry",
+        fromId: clientId,
+        targetId,
+        name: displayName,
+        ts: Date.now()
+      });
+      return;
+    }
+
     if (payload.type === "control-input") {
       if (role !== "viewer" || controlViewerId !== clientId) return;
 
@@ -991,10 +1025,19 @@ async function handleSocketMessage(msg) {
   }
 
   if (msg.type === "stream-status") {
+    hostStreamLive = Boolean(msg.live);
+
     if (role === "viewer") {
       if (msg.live) {
-        setStreamState("Host is live. Waiting for stream...");
+        if (hasRemoteVideoTrack()) {
+          clearViewerStreamSyncState();
+          setStreamState("Receiving host stream.");
+        } else {
+          setStreamState("Host is live. Waiting for stream...");
+          scheduleViewerStreamSync();
+        }
       } else {
+        clearViewerStreamSyncState();
         clearRemoteVideo();
         setStreamState("Host stopped sharing.");
       }
@@ -1007,6 +1050,11 @@ async function handleSocketMessage(msg) {
         setStreamState("Screen share stopped.");
       }
     }
+    return;
+  }
+
+  if (msg.type === "stream-retry") {
+    handleStreamRetryRequest(msg);
     return;
   }
 
@@ -1065,6 +1113,7 @@ function syncFromPresence(payload) {
   }
 
   hostId = payload.hostId || "";
+  hostStreamLive = Boolean(payload.streamLive);
 
   const nextControlViewerId = payload.controlViewerId || "";
   const nextControlViewerName =
@@ -1107,6 +1156,7 @@ function syncFromPresence(payload) {
 
   if (role === "viewer") {
     if (!hostId) {
+      clearViewerStreamSyncState();
       clearAllPeers();
       clearRemoteVideo();
       setStreamState("No host in room.");
@@ -1121,9 +1171,16 @@ function syncFromPresence(payload) {
 
     ensurePeer(hostId, false);
 
-    if (payload.streamLive) {
-      setStreamState("Host is live. Waiting for stream...");
+    if (hostStreamLive) {
+      if (hasRemoteVideoTrack()) {
+        clearViewerStreamSyncState();
+        setStreamState("Receiving host stream.");
+      } else {
+        setStreamState("Host is live. Waiting for stream...");
+        scheduleViewerStreamSync();
+      }
     } else {
+      clearViewerStreamSyncState();
       clearRemoteVideo();
       setStreamState("Host is not sharing yet.");
     }
@@ -1143,6 +1200,7 @@ function ensurePeer(peerId, initiator) {
     initiator,
     pendingCandidates: [],
     pendingRenegotiation: false,
+    pendingIceRestart: false,
     makingOffer: false,
     disconnectTimer: null
   };
@@ -1176,6 +1234,7 @@ function ensurePeer(peerId, initiator) {
       });
     }
 
+    clearViewerStreamSyncState();
     setStreamState("Receiving host stream.");
   });
 
@@ -1183,6 +1242,11 @@ function ensurePeer(peerId, initiator) {
     if (pc.connectionState === "connected" && peer.disconnectTimer) {
       clearTimeout(peer.disconnectTimer);
       peer.disconnectTimer = null;
+    }
+
+    if (pc.connectionState === "connected" && role === "viewer" && hasRemoteVideoTrack()) {
+      clearViewerStreamSyncState();
+      setStreamState("Receiving host stream.");
     }
 
     if (pc.connectionState === "disconnected") {
@@ -1208,8 +1272,10 @@ function ensurePeer(peerId, initiator) {
 
   pc.addEventListener("signalingstatechange", () => {
     if (pc.signalingState === "stable" && peer.pendingRenegotiation && role === "host") {
+      const restartPending = peer.pendingIceRestart;
       peer.pendingRenegotiation = false;
-      void renegotiatePeer(peerId);
+      peer.pendingIceRestart = false;
+      void renegotiatePeer(peerId, { iceRestart: restartPending });
     }
   });
 
@@ -1217,8 +1283,9 @@ function ensurePeer(peerId, initiator) {
 
   if (initiator && role === "host" && localStream) {
     const changed = attachLocalTracks(peerId);
-    if (changed) {
-      void renegotiatePeer(peerId);
+    const shouldRenegotiate = changed || peer.pc.connectionState !== "connected";
+    if (shouldRenegotiate) {
+      void renegotiatePeer(peerId, { iceRestart: !changed });
     }
   }
 
@@ -1269,26 +1336,30 @@ function attachLocalTracks(peerId) {
   return changed;
 }
 
-async function renegotiatePeer(peerId) {
+async function renegotiatePeer(peerId, options = {}) {
   if (role !== "host" || !roomId) return;
 
   const peer = peers.get(peerId);
   if (!peer) return;
 
+  const iceRestart = Boolean(options.iceRestart);
+
   if (peer.makingOffer) {
     peer.pendingRenegotiation = true;
+    peer.pendingIceRestart = peer.pendingIceRestart || iceRestart;
     return;
   }
 
   if (peer.pc.signalingState !== "stable") {
     peer.pendingRenegotiation = true;
+    peer.pendingIceRestart = peer.pendingIceRestart || iceRestart;
     return;
   }
 
   peer.makingOffer = true;
 
   try {
-    const offer = await peer.pc.createOffer();
+    const offer = await peer.pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
     await peer.pc.setLocalDescription(offer);
 
     send({
@@ -1305,9 +1376,11 @@ async function renegotiatePeer(peerId) {
     peer.makingOffer = false;
 
     if (peer.pendingRenegotiation && peer.pc.signalingState === "stable") {
+      const restartPending = peer.pendingIceRestart;
       peer.pendingRenegotiation = false;
+      peer.pendingIceRestart = false;
       setTimeout(() => {
-        void renegotiatePeer(peerId);
+        void renegotiatePeer(peerId, { iceRestart: restartPending });
       }, 0);
     }
   }
@@ -1445,9 +1518,11 @@ async function startShare() {
     send({ type: "stream-status", live: true });
 
     for (const peerId of Array.from(peers.keys())) {
+      const peer = peers.get(peerId);
       const changed = attachLocalTracks(peerId);
-      if (changed) {
-        void renegotiatePeer(peerId);
+      const shouldRenegotiate = changed || (peer && peer.pc.connectionState !== "connected");
+      if (shouldRenegotiate) {
+        void renegotiatePeer(peerId, { iceRestart: !changed });
       }
     }
   } catch (err) {
@@ -1558,6 +1633,8 @@ function stopShare(notify = true) {
   els.localVideo.srcObject = null;
 
   if (role === "host") {
+    hostStreamLive = false;
+
     if (notify && roomId) {
       send({ type: "stream-status", live: false });
     }
@@ -1583,6 +1660,68 @@ function stopShare(notify = true) {
 
 function clearRemoteVideo() {
   els.remoteVideo.srcObject = null;
+}
+
+function hasRemoteVideoTrack() {
+  const stream = els.remoteVideo.srcObject;
+  if (!stream || typeof stream.getVideoTracks !== "function") return false;
+
+  return stream.getVideoTracks().some((track) => track && track.readyState === "live");
+}
+
+function clearViewerStreamSyncState() {
+  if (streamSyncRetryTimer) {
+    clearTimeout(streamSyncRetryTimer);
+    streamSyncRetryTimer = null;
+  }
+
+  streamSyncRetryCount = 0;
+}
+
+function scheduleViewerStreamSync() {
+  if (role !== "viewer" || !roomId || !hostId || !hostStreamLive) return;
+  if (hasRemoteVideoTrack()) {
+    clearViewerStreamSyncState();
+    return;
+  }
+  if (streamSyncRetryTimer || streamSyncRetryCount >= streamSyncRetryMax) return;
+
+  streamSyncRetryTimer = setTimeout(() => {
+    streamSyncRetryTimer = null;
+
+    if (role !== "viewer" || !roomId || !hostId || !hostStreamLive || hasRemoteVideoTrack()) {
+      clearViewerStreamSyncState();
+      return;
+    }
+
+    streamSyncRetryCount += 1;
+    send({
+      type: "stream-retry",
+      targetId: hostId
+    });
+
+    if (streamSyncRetryCount >= streamSyncRetryMax) {
+      setStreamState("Host is live but stream sync is delayed. Rejoin viewer if it stays blank.");
+      return;
+    }
+
+    setStreamState("Host is live. Syncing stream...");
+    scheduleViewerStreamSync();
+  }, streamSyncRetryDelayMs);
+}
+
+function handleStreamRetryRequest(msg) {
+  if (role !== "host") return;
+  if (!localStream || !roomId) return;
+
+  const viewerId = String(msg?.fromId || "").trim();
+  if (!viewerId || viewerId === clientId) return;
+
+  const viewer = ensurePeer(viewerId, true);
+  if (!viewer) return;
+
+  attachLocalTracks(viewerId);
+  void renegotiatePeer(viewerId, { iceRestart: true });
 }
 
 function sendChat() {

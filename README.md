@@ -99,6 +99,9 @@ After this first setup, every push to `main` auto-deploys.
 5. Viewers watch the same cloud browser stream in near real time.
 6. Optional: Host can still use **Start Chrome Tab Share** for direct tab sharing.
 7. Everyone chats instantly.
+8. A viewer can click **Request Control** to ask host for collaboration access.
+9. Host receives a prompt and can approve or deny that request.
+10. When approved, the viewer can move/click on the stream and both sides see live cursor + click markers to work together.
 
 ## Performance notes
 - Chat/presence: Firebase realtime updates.

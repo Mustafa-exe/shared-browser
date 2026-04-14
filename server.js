@@ -113,6 +113,118 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.type === "control-request") {
+      if (sender.role !== "viewer") return;
+      if (!room.hostId) return;
+
+      const host = room.clients.get(room.hostId);
+      if (!host) return;
+
+      safeSend(host.ws, {
+        type: "control-request",
+        fromId: sender.id,
+        name: sender.name,
+        ts: Date.now()
+      });
+      return;
+    }
+
+    if (msg.type === "control-response") {
+      if (sender.role !== "host" || room.hostId !== sender.id) return;
+
+      const targetId = sanitizeId(msg.targetId);
+      if (!targetId) return;
+
+      const target = room.clients.get(targetId);
+      if (!target || target.role !== "viewer") return;
+
+      if (!msg.granted) {
+        safeSend(target.ws, {
+          type: "control-denied",
+          viewerId: target.id,
+          viewerName: target.name,
+          byId: sender.id,
+          byName: sender.name,
+          ts: Date.now()
+        });
+        return;
+      }
+
+      room.controlViewerId = target.id;
+
+      broadcast(roomId, {
+        type: "control-status",
+        granted: true,
+        viewerId: target.id,
+        viewerName: target.name,
+        byId: sender.id,
+        byName: sender.name,
+        ts: Date.now()
+      });
+
+      broadcastPresence(roomId);
+      return;
+    }
+
+    if (msg.type === "control-revoke") {
+      if (sender.role !== "host" || room.hostId !== sender.id) return;
+      if (!room.controlViewerId) return;
+
+      const releasedId = room.controlViewerId;
+      const releasedName = room.clients.get(releasedId)?.name || "viewer";
+      room.controlViewerId = "";
+
+      broadcast(roomId, {
+        type: "control-status",
+        granted: false,
+        viewerId: releasedId,
+        viewerName: releasedName,
+        byId: sender.id,
+        byName: sender.name,
+        ts: Date.now()
+      });
+
+      broadcastPresence(roomId);
+      return;
+    }
+
+    if (msg.type === "control-release") {
+      if (sender.role !== "viewer") return;
+      if (room.controlViewerId !== sender.id) return;
+
+      room.controlViewerId = "";
+
+      broadcast(roomId, {
+        type: "control-status",
+        granted: false,
+        viewerId: sender.id,
+        viewerName: sender.name,
+        byId: sender.id,
+        byName: sender.name,
+        ts: Date.now()
+      });
+
+      broadcastPresence(roomId);
+      return;
+    }
+
+    if (msg.type === "control-input") {
+      if (sender.role !== "viewer") return;
+      if (room.controlViewerId !== sender.id) return;
+
+      const input = sanitizeControlInput(msg.input);
+      if (!input) return;
+
+      broadcast(roomId, {
+        type: "control-input",
+        fromId: sender.id,
+        name: sender.name,
+        input,
+        ts: Date.now()
+      });
+      return;
+    }
+
     if (msg.type === "signal") {
       const targetId = sanitizeId(msg.targetId);
       if (!targetId) return;
@@ -159,6 +271,7 @@ function getOrCreateRoom(roomId) {
   const room = {
     id: roomId,
     hostId: "",
+    controlViewerId: "",
     streamLive: false,
     clients: new Map()
   };
@@ -173,7 +286,21 @@ function removeClient(roomId, clientId) {
   const client = room.clients.get(clientId);
   room.clients.delete(clientId);
 
+  if (room.controlViewerId === clientId) {
+    room.controlViewerId = "";
+    broadcast(roomId, {
+      type: "control-status",
+      granted: false,
+      viewerId: clientId,
+      viewerName: client?.name || "viewer",
+      byId: clientId,
+      byName: client?.name || "viewer",
+      ts: Date.now()
+    });
+  }
+
   if (room.hostId === clientId) {
+    room.controlViewerId = "";
     room.hostId = "";
     room.streamLive = false;
     broadcast(roomId, {
@@ -207,11 +334,15 @@ function broadcastPresence(roomId) {
   }
 
   const viewerCount = participants.filter((p) => p.role === "viewer").length;
+  const controlViewerId = room.controlViewerId || "";
+  const controlViewerName = controlViewerId ? room.clients.get(controlViewerId)?.name || "" : "";
 
   broadcast(roomId, {
     type: "presence",
     roomId,
     hostId: room.hostId || "",
+    controlViewerId,
+    controlViewerName,
     streamLive: room.streamLive,
     participants,
     viewerCount,
@@ -272,4 +403,21 @@ function sanitizeName(value) {
       .replace(/[^a-zA-Z0-9 _-]/g, "")
       .slice(0, 24) || "guest"
   );
+}
+
+function sanitizeControlInput(value) {
+  if (!value || typeof value !== "object") return null;
+
+  const kind = value.kind === "move" || value.kind === "click" ? value.kind : "";
+  if (!kind) return null;
+
+  const x = Number(value.x);
+  const y = Number(value.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+  return {
+    kind,
+    x: Math.max(0, Math.min(1, x)),
+    y: Math.max(0, Math.min(1, y))
+  };
 }

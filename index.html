@@ -38,6 +38,17 @@
           <button id="stopShareBtn" class="btn btn-danger">Stop Screen Share</button>
         </div>
         <p id="streamState" class="helper">Join a room to start.</p>
+
+        <h2>Collab Control</h2>
+        <div class="row control-row">
+          <button id="requestControlBtn" class="btn">Request Control</button>
+          <button id="releaseControlBtn" class="btn btn-danger">Release Control</button>
+          <button id="revokeControlBtn" class="btn btn-danger">Revoke Viewer Control</button>
+        </div>
+        <p id="controlState" class="helper">Host can grant viewer collaboration control.</p>
+        <p class="helper helper-note">
+          Control mode shares cursor and click actions on the live stream so both users can work together.
+        </p>
       </section>
 
       <section class="panel videos">
@@ -76,6 +87,8 @@
       </section>
     </main>
 
+    <div id="controlPointer" class="control-pointer" hidden></div>
+    <div id="controlPulse" class="control-pulse" hidden></div>
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
     <script type="module" src="app.js"></script>

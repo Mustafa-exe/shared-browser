@@ -172,6 +172,14 @@ input:focus {
   font-size: 13px;
 }
 
+.helper-note {
+  font-size: 12px;
+}
+
+.control-row {
+  align-items: center;
+}
+
 .videos {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -226,6 +234,10 @@ video {
   min-height: 230px;
   background: black;
   border-radius: 10px;
+}
+
+video.can-control {
+  cursor: crosshair;
 }
 
 .remote-card.is-fullscreen video {
@@ -345,6 +357,45 @@ video {
   display: none;
 }
 
+.control-pointer {
+  position: fixed;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
+  border-radius: 999px;
+  border: 2px solid rgba(34, 211, 238, 0.95);
+  background: rgba(34, 211, 238, 0.25);
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.55);
+  pointer-events: none;
+  z-index: 2450;
+}
+
+.control-pulse {
+  position: fixed;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  margin-top: -9px;
+  border-radius: 999px;
+  border: 2px solid rgba(248, 113, 113, 0.98);
+  pointer-events: none;
+  z-index: 2451;
+  animation: controlPulse 420ms ease-out forwards;
+}
+
+@keyframes controlPulse {
+  0% {
+    opacity: 1;
+    transform: scale(0.6);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+
 .toast-stack {
   position: fixed;
   right: calc(16px + env(safe-area-inset-right));
@@ -456,6 +507,10 @@ video {
 
   .video-head .btn {
     width: auto;
+  }
+
+  .control-row .btn {
+    width: 100%;
   }
 
   video {

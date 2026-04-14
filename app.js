@@ -10,6 +10,10 @@ const els = {
   startShareBtn: document.getElementById("startShareBtn"),
   stopShareBtn: document.getElementById("stopShareBtn"),
   streamState: document.getElementById("streamState"),
+  requestControlBtn: document.getElementById("requestControlBtn"),
+  releaseControlBtn: document.getElementById("releaseControlBtn"),
+  revokeControlBtn: document.getElementById("revokeControlBtn"),
+  controlState: document.getElementById("controlState"),
   localVideoCard: document.getElementById("localVideoCard"),
   remoteVideoCard: document.getElementById("remoteVideoCard"),
   fullscreenBtn: document.getElementById("fullscreenBtn"),
@@ -23,6 +27,8 @@ const els = {
   chatLog: document.getElementById("chatLog"),
   chatForm: document.getElementById("chatForm"),
   chatInput: document.getElementById("chatInput"),
+  controlPointer: document.getElementById("controlPointer"),
+  controlPulse: document.getElementById("controlPulse"),
   toastStack: document.getElementById("toastStack")
 };
 
@@ -44,8 +50,15 @@ let localStream = null;
 let isRemoteFullscreen = false;
 let isChatCollapsed = false;
 let unreadMessages = 0;
+let controlViewerId = "";
+let controlViewerName = "";
+let pendingControlRequest = false;
+let lastControlMoveAt = 0;
+let controlPointerTimer = null;
+let controlCaptureBound = false;
 
 const peers = new Map();
+const participantNames = new Map();
 
 bootstrap();
 
@@ -57,6 +70,9 @@ function bootstrap() {
   els.leaveBtn.addEventListener("click", () => leaveRoom());
   els.startShareBtn.addEventListener("click", () => startShare());
   els.stopShareBtn.addEventListener("click", () => stopShare());
+  els.requestControlBtn.addEventListener("click", () => requestControlAccess());
+  els.releaseControlBtn.addEventListener("click", () => releaseControlAccess());
+  els.revokeControlBtn.addEventListener("click", () => revokeControlAccess());
   els.fullscreenBtn.addEventListener("click", () => toggleRemoteFullscreen());
   els.chatToggleBtn.addEventListener("click", () => {
     setChatCollapsed(!isChatCollapsed);
@@ -84,6 +100,7 @@ function bootstrap() {
   setCounts(0, 0);
   setStreamState("Join a room to start.");
   updateUnreadBadge();
+  updateControlUi();
 
   ensureSocket()
     .then(() => {
@@ -157,6 +174,7 @@ async function leaveRoom(options = {}) {
   setRemoteFullscreen(false);
   resetChatIndicators();
   clearPopups();
+  resetControlState();
 
   roomId = "";
   role = "none";
@@ -238,6 +256,7 @@ function ensureSocket() {
         setRemoteFullscreen(false);
         resetChatIndicators();
         clearPopups();
+        resetControlState();
         roomId = "";
         role = "none";
         hostId = "";
@@ -329,6 +348,28 @@ async function handleSocketMessage(msg) {
     return;
   }
 
+  if (msg.type === "control-request") {
+    handleControlRequest(msg);
+    return;
+  }
+
+  if (msg.type === "control-status") {
+    applyControlStatus(msg);
+    return;
+  }
+
+  if (msg.type === "control-denied") {
+    pendingControlRequest = false;
+    renderLocalSystem("Host denied your control request.");
+    updateControlUi();
+    return;
+  }
+
+  if (msg.type === "control-input") {
+    handleControlInput(msg);
+    return;
+  }
+
   if (msg.type === "chat") {
     renderMessage(
       msg.name || "user",
@@ -347,7 +388,27 @@ function syncFromPresence(payload) {
   setCounts(online, viewers);
 
   const participants = Array.isArray(payload.participants) ? payload.participants : [];
+  participantNames.clear();
+  for (const participant of participants) {
+    if (!participant || !participant.id) continue;
+    participantNames.set(participant.id, participant.name || "viewer");
+  }
+
   hostId = payload.hostId || "";
+
+  const nextControlViewerId = payload.controlViewerId || "";
+  const nextControlViewerName =
+    payload.controlViewerName || (nextControlViewerId ? participantNames.get(nextControlViewerId) || "viewer" : "");
+
+  controlViewerId = nextControlViewerId;
+  controlViewerName = nextControlViewerName;
+
+  if (controlViewerId !== clientId) {
+    pendingControlRequest = false;
+  }
+
+  updateControlUi();
+  updateControlCaptureState();
 
   if (role === "host") {
     const viewerIds = new Set(
@@ -859,6 +920,9 @@ function setRoleUi() {
   if (!canFullscreen && isRemoteFullscreen) {
     setRemoteFullscreen(false);
   }
+
+  updateControlUi();
+  updateControlCaptureState();
 }
 
 function setCounts(online, viewers) {
@@ -984,6 +1048,301 @@ function showPopup(name, text) {
 
 function clearPopups() {
   els.toastStack.innerHTML = "";
+}
+
+function requestControlAccess() {
+  if (role !== "viewer") return;
+
+  if (!roomId || !hostId) {
+    alert("Join a room with an active host first.");
+    return;
+  }
+
+  if (controlViewerId === clientId) {
+    renderLocalSystem("You already have control access.");
+    return;
+  }
+
+  if (pendingControlRequest) return;
+
+  const ok = send({ type: "control-request" });
+  if (!ok) {
+    alert("Control request failed. WebSocket is disconnected.");
+    return;
+  }
+
+  pendingControlRequest = true;
+  renderLocalSystem("Control request sent to host.");
+  updateControlUi();
+}
+
+function releaseControlAccess() {
+  if (role !== "viewer" || controlViewerId !== clientId) return;
+
+  const ok = send({ type: "control-release" });
+  if (!ok) {
+    alert("Could not release control right now.");
+    return;
+  }
+
+  renderLocalSystem("Released control access.");
+}
+
+function revokeControlAccess() {
+  if (role !== "host" || !controlViewerId) return;
+
+  const ok = send({ type: "control-revoke" });
+  if (!ok) {
+    alert("Could not revoke control right now.");
+    return;
+  }
+
+  renderLocalSystem("Revoked viewer control access.");
+}
+
+function handleControlRequest(msg) {
+  if (role !== "host") return;
+
+  const requesterId = String(msg?.fromId || "");
+  if (!requesterId) return;
+
+  const requesterName = String(msg?.name || participantNames.get(requesterId) || "viewer");
+  const accepted = window.confirm(
+    `${requesterName} requested control. Allow them to send shared cursor and click actions?`
+  );
+
+  const ok = send({
+    type: "control-response",
+    targetId: requesterId,
+    granted: accepted
+  });
+
+  if (!ok) {
+    alert("Could not send control response.");
+    return;
+  }
+
+  if (!accepted) {
+    renderLocalSystem(`Denied control request from ${requesterName}.`);
+  }
+}
+
+function applyControlStatus(msg) {
+  const granted = Boolean(msg?.granted);
+  const viewerId = String(msg?.viewerId || "");
+  const viewerName = String(msg?.viewerName || participantNames.get(viewerId) || "viewer");
+  const hadSelfControl = controlViewerId === clientId;
+
+  if (granted && viewerId) {
+    controlViewerId = viewerId;
+    controlViewerName = viewerName;
+    pendingControlRequest = false;
+    renderLocalSystem(`${viewerName} now has control access.`);
+  } else {
+    controlViewerId = "";
+    controlViewerName = "";
+    pendingControlRequest = false;
+    hideControlPointer(true);
+
+    if (viewerId) {
+      renderLocalSystem(`${viewerName} control access ended.`);
+    }
+
+    if (hadSelfControl || viewerId === clientId) {
+      renderLocalSystem("You no longer have control access.");
+    }
+  }
+
+  updateControlUi();
+  updateControlCaptureState();
+}
+
+function updateControlUi() {
+  const hasRoom = Boolean(roomId);
+  const viewerHasControl = role === "viewer" && controlViewerId === clientId;
+  const hasActiveController = Boolean(controlViewerId);
+
+  els.requestControlBtn.hidden = role !== "viewer";
+  els.releaseControlBtn.hidden = role !== "viewer";
+  els.revokeControlBtn.hidden = role !== "host";
+
+  els.requestControlBtn.disabled =
+    role !== "viewer" || !hasRoom || !hostId || pendingControlRequest || viewerHasControl;
+  els.releaseControlBtn.disabled = !viewerHasControl;
+  els.revokeControlBtn.disabled = role !== "host" || !hasActiveController;
+
+  if (!hasRoom || role === "none") {
+    els.controlState.textContent = "Join a room to use collaborative control.";
+    return;
+  }
+
+  if (role === "host") {
+    if (hasActiveController) {
+      const name = controlViewerName || participantNames.get(controlViewerId) || "viewer";
+      els.controlState.textContent = `${name} currently has control access.`;
+    } else {
+      els.controlState.textContent = "No viewer has control access. Approve requests when prompted.";
+    }
+    return;
+  }
+
+  if (viewerHasControl) {
+    els.controlState.textContent =
+      "You have control access. Move/click on the stream to collaborate with host.";
+    return;
+  }
+
+  if (pendingControlRequest) {
+    els.controlState.textContent = "Waiting for host approval...";
+    return;
+  }
+
+  if (hasActiveController) {
+    const name = controlViewerName || participantNames.get(controlViewerId) || "Another viewer";
+    els.controlState.textContent = `${name} currently has control access.`;
+    return;
+  }
+
+  els.controlState.textContent = "Request access and wait for host approval.";
+}
+
+function updateControlCaptureState() {
+  const canControl = role === "viewer" && roomId && controlViewerId === clientId;
+
+  els.remoteVideo.classList.toggle("can-control", Boolean(canControl));
+
+  if (canControl) {
+    bindControlCapture();
+  } else {
+    unbindControlCapture();
+  }
+}
+
+function bindControlCapture() {
+  if (controlCaptureBound) return;
+
+  els.remoteVideo.addEventListener("pointermove", onControlPointerMove);
+  els.remoteVideo.addEventListener("pointerdown", onControlPointerDown);
+  controlCaptureBound = true;
+}
+
+function unbindControlCapture() {
+  if (!controlCaptureBound) return;
+
+  els.remoteVideo.removeEventListener("pointermove", onControlPointerMove);
+  els.remoteVideo.removeEventListener("pointerdown", onControlPointerDown);
+  controlCaptureBound = false;
+}
+
+function onControlPointerMove(event) {
+  if (controlViewerId !== clientId || role !== "viewer") return;
+
+  const now = Date.now();
+  if (now - lastControlMoveAt < 45) return;
+  lastControlMoveAt = now;
+
+  sendControlInput("move", event.clientX, event.clientY);
+}
+
+function onControlPointerDown(event) {
+  if (controlViewerId !== clientId || role !== "viewer") return;
+  sendControlInput("click", event.clientX, event.clientY);
+}
+
+function sendControlInput(kind, clientX, clientY) {
+  const rect = els.remoteVideo.getBoundingClientRect();
+  if (rect.width < 8 || rect.height < 8) return;
+
+  const x = (clientX - rect.left) / rect.width;
+  const y = (clientY - rect.top) / rect.height;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+  if (x < 0 || x > 1 || y < 0 || y > 1) return;
+
+  send({
+    type: "control-input",
+    input: {
+      kind,
+      x,
+      y
+    }
+  });
+}
+
+function handleControlInput(msg) {
+  const fromId = String(msg?.fromId || "");
+  if (!fromId) return;
+  if (controlViewerId && fromId !== controlViewerId) return;
+
+  const input = msg?.input;
+  if (!input || typeof input !== "object") return;
+
+  const x = Number(input.x);
+  const y = Number(input.y);
+  const kind = input.kind === "click" ? "click" : "move";
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+  showControlPointer(kind, x, y);
+}
+
+function showControlPointer(kind, xNorm, yNorm) {
+  const targetVideo = role === "host" ? els.localVideo : els.remoteVideo;
+  if (!targetVideo) return;
+
+  const rect = targetVideo.getBoundingClientRect();
+  if (rect.width < 8 || rect.height < 8) return;
+
+  const x = rect.left + Math.max(0, Math.min(1, xNorm)) * rect.width;
+  const y = rect.top + Math.max(0, Math.min(1, yNorm)) * rect.height;
+
+  els.controlPointer.style.left = `${x}px`;
+  els.controlPointer.style.top = `${y}px`;
+  els.controlPointer.hidden = false;
+
+  if (controlPointerTimer) {
+    clearTimeout(controlPointerTimer);
+  }
+  controlPointerTimer = setTimeout(() => {
+    hideControlPointer();
+  }, 1400);
+
+  if (kind === "click") {
+    els.controlPulse.hidden = false;
+    els.controlPulse.style.left = `${x}px`;
+    els.controlPulse.style.top = `${y}px`;
+    els.controlPulse.style.animation = "none";
+    void els.controlPulse.offsetWidth;
+    els.controlPulse.style.animation = "";
+    window.setTimeout(() => {
+      els.controlPulse.hidden = true;
+    }, 420);
+  }
+}
+
+function hideControlPointer(force = false) {
+  if (controlPointerTimer) {
+    clearTimeout(controlPointerTimer);
+    controlPointerTimer = null;
+  }
+
+  if (force) {
+    els.controlPulse.hidden = true;
+  }
+
+  els.controlPointer.hidden = true;
+}
+
+function resetControlState() {
+  controlViewerId = "";
+  controlViewerName = "";
+  pendingControlRequest = false;
+  lastControlMoveAt = 0;
+
+  hideControlPointer(true);
+  unbindControlCapture();
+  participantNames.clear();
+
+  updateControlUi();
 }
 
 function sanitizeRoom(value) {

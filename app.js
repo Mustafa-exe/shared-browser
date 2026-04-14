@@ -116,6 +116,7 @@ let streamSyncRetryCount = 0;
 
 const streamSyncRetryDelayMs = 2800;
 const streamSyncRetryMax = 6;
+const realtimeEventReplayWindowMs = 24 * 60 * 60 * 1000;
 
 const peers = new Map();
 const participantNames = new Map();
@@ -735,7 +736,7 @@ function subscribeRealtimeRoom() {
     }
   });
 
-  const eventsQuery = query(eventsRef, orderByChild("ts"), startAt(joinedAtMs - 2000));
+  const eventsQuery = query(eventsRef, orderByChild("ts"), startAt(Date.now() - realtimeEventReplayWindowMs));
   const eventsUnsub = onChildAdded(eventsQuery, (snapshot) => {
     const event = snapshot.val();
     void handleRealtimeEvent(event);
@@ -779,7 +780,7 @@ async function handleRealtimeEvent(event) {
   if (!event || typeof event !== "object") return;
 
   const eventTs = Number(event.ts || 0);
-  if (eventTs && eventTs < joinedAtMs - 2000) {
+  if (eventTs && eventTs < Date.now() - realtimeEventReplayWindowMs) {
     return;
   }
 
@@ -888,6 +889,7 @@ async function sendRealtimeEvent(payload) {
 
         await push(eventsRef, {
           type: "control-status",
+          fromId: clientId,
           granted: true,
           viewerId: targetId,
           viewerName,
@@ -898,6 +900,7 @@ async function sendRealtimeEvent(payload) {
       } else {
         await push(eventsRef, {
           type: "control-denied",
+          fromId: clientId,
           targetId,
           viewerId: targetId,
           viewerName,
@@ -921,6 +924,7 @@ async function sendRealtimeEvent(payload) {
 
       await push(eventsRef, {
         type: "control-status",
+        fromId: clientId,
         granted: false,
         viewerId: releasedId,
         viewerName: releasedName,
@@ -940,6 +944,7 @@ async function sendRealtimeEvent(payload) {
 
       await push(eventsRef, {
         type: "control-status",
+        fromId: clientId,
         granted: false,
         viewerId: clientId,
         viewerName: displayName,

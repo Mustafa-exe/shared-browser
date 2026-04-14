@@ -2075,10 +2075,16 @@ async function setRemoteFullscreen(nextState) {
 }
 
 function applyRemoteFullscreenUi() {
+  const mobileFullscreenMode = isRemoteFullscreen && isMobileViewport();
+  if (mobileFullscreenMode && isChatCollapsed) {
+    setChatCollapsed(false);
+  }
+
   document.body.classList.toggle("fullscreen-active", isRemoteFullscreen);
   els.remoteVideoCard.classList.toggle("is-fullscreen", isRemoteFullscreen);
   els.fullscreenBtn.textContent = isRemoteFullscreen ? "Exit Fullscreen" : "Fullscreen";
-  els.chatToggleBtn.hidden = !isRemoteFullscreen;
+  // Keep chat open and visible on mobile fullscreen so messaging remains usable.
+  els.chatToggleBtn.hidden = !isRemoteFullscreen || mobileFullscreenMode;
   syncOverlayState();
   syncMobileFullscreenLayout();
 }
@@ -2094,15 +2100,21 @@ function syncMobileFullscreenLayout() {
 }
 
 function onDocumentFullscreenChange() {
-  const activeFullscreenElement = document.fullscreenElement;
-  const expectedMobileFullscreenElement = getMobileFullscreenElement();
-  const isExpectedFullscreen =
-    activeFullscreenElement === expectedMobileFullscreenElement || activeFullscreenElement === els.remoteVideoCard;
+  if (!isRemoteFullscreen) {
+    applyRemoteFullscreenUi();
+    return;
+  }
 
-  if (isRemoteFullscreen && isMobileViewport() && !isExpectedFullscreen) {
+  // On mobile we intentionally use in-app fullscreen (CSS) to keep chat usable.
+  if (isMobileViewport()) {
+    applyRemoteFullscreenUi();
+    return;
+  }
+
+  const remoteCardIsFullscreen = document.fullscreenElement === els.remoteVideoCard;
+  if (!remoteCardIsFullscreen) {
     isRemoteFullscreen = false;
     setChatCollapsed(false);
-    void unlockLandscapeOrientation();
   }
 
   applyRemoteFullscreenUi();
@@ -2110,46 +2122,11 @@ function onDocumentFullscreenChange() {
 
 async function enterMobileFullscreenExperience() {
   if (!isMobileViewport()) return;
-
-  await requestMobileFullscreen();
   await lockLandscapeOrientation();
 }
 
 async function exitMobileFullscreenExperience() {
   await unlockLandscapeOrientation();
-
-  const activeFullscreenElement = document.fullscreenElement;
-  if (!activeFullscreenElement) return;
-
-  const expectedMobileFullscreenElement = getMobileFullscreenElement();
-  const isExpectedFullscreen =
-    activeFullscreenElement === expectedMobileFullscreenElement || activeFullscreenElement === els.remoteVideoCard;
-  if (!isExpectedFullscreen) return;
-
-  if (typeof document.exitFullscreen !== "function") return;
-
-  try {
-    await document.exitFullscreen();
-  } catch {
-    // no-op
-  }
-}
-
-function getMobileFullscreenElement() {
-  return els.appRoot || els.remoteVideoCard;
-}
-
-async function requestMobileFullscreen() {
-  const fullscreenElement = getMobileFullscreenElement();
-  if (!fullscreenElement) return;
-  if (document.fullscreenElement === fullscreenElement) return;
-  if (typeof fullscreenElement.requestFullscreen !== "function") return;
-
-  try {
-    await fullscreenElement.requestFullscreen({ navigationUI: "hide" });
-  } catch {
-    // no-op
-  }
 }
 
 async function lockLandscapeOrientation() {

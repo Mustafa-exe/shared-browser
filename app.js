@@ -11,8 +11,7 @@ import {
   onChildAdded,
   onDisconnect,
   query,
-  orderByChild,
-  startAt
+  limitToLast
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-database.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -116,7 +115,7 @@ let streamSyncRetryCount = 0;
 
 const streamSyncRetryDelayMs = 2800;
 const streamSyncRetryMax = 6;
-const realtimeEventReplayWindowMs = 24 * 60 * 60 * 1000;
+const realtimeEventBufferLimit = 400;
 
 const peers = new Map();
 const participantNames = new Map();
@@ -632,6 +631,9 @@ async function joinRealtimeRoom() {
         "Claim host role"
       );
 
+      // Reset stale events so late joiners only process the current host session.
+      await withTimeout(set(eventsRef, null), 10000, "Reset room events");
+
       try {
         const hostDisconnectHandle = onDisconnect(roomMetaRef);
         void hostDisconnectHandle.update({
@@ -736,7 +738,7 @@ function subscribeRealtimeRoom() {
     }
   });
 
-  const eventsQuery = query(eventsRef, orderByChild("ts"), startAt(Date.now() - realtimeEventReplayWindowMs));
+  const eventsQuery = query(eventsRef, limitToLast(realtimeEventBufferLimit));
   const eventsUnsub = onChildAdded(eventsQuery, (snapshot) => {
     const event = snapshot.val();
     void handleRealtimeEvent(event);
@@ -778,11 +780,6 @@ function emitPresenceSnapshot() {
 
 async function handleRealtimeEvent(event) {
   if (!event || typeof event !== "object") return;
-
-  const eventTs = Number(event.ts || 0);
-  if (eventTs && eventTs < Date.now() - realtimeEventReplayWindowMs) {
-    return;
-  }
 
   if (event.targetId && event.targetId !== clientId) {
     return;
@@ -1213,12 +1210,15 @@ function ensurePeer(peerId, initiator) {
   pc.addEventListener("icecandidate", (event) => {
     if (!event.candidate) return;
 
+    const serializedCandidate = serializeIceCandidate(event.candidate);
+    if (!serializedCandidate) return;
+
     send({
       type: "signal",
       targetId: peerId,
       signal: {
         type: "candidate",
-        candidate: event.candidate
+        candidate: serializedCandidate
       }
     });
   });
@@ -1367,12 +1367,17 @@ async function renegotiatePeer(peerId, options = {}) {
     const offer = await peer.pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
     await peer.pc.setLocalDescription(offer);
 
+    const serializedOffer = serializeSessionDescription(peer.pc.localDescription);
+    if (!serializedOffer) {
+      return;
+    }
+
     send({
       type: "signal",
       targetId: peerId,
       signal: {
         type: "offer",
-        offer: peer.pc.localDescription
+        offer: serializedOffer
       }
     });
   } catch (err) {
@@ -1394,7 +1399,10 @@ async function renegotiatePeer(peerId, options = {}) {
 async function handleSignal(fromId, signal) {
   if (!fromId || !signal || typeof signal !== "object") return;
 
-  if (role === "host" && signal.type === "offer") {
+  const normalizedSignal = normalizeSignalPayload(signal);
+  if (!normalizedSignal) return;
+
+  if (role === "host" && normalizedSignal.type === "offer") {
     return;
   }
 
@@ -1404,19 +1412,99 @@ async function handleSignal(fromId, signal) {
   }
   if (!peer) return;
 
-  if (signal.type === "offer") {
-    await handleOffer(peer, fromId, signal.offer);
+  if (normalizedSignal.type === "offer") {
+    await handleOffer(peer, fromId, normalizedSignal.offer);
     return;
   }
 
-  if (signal.type === "answer") {
-    await handleAnswer(peer, signal.answer);
+  if (normalizedSignal.type === "answer") {
+    await handleAnswer(peer, normalizedSignal.answer);
     return;
   }
 
-  if (signal.type === "candidate") {
-    await handleCandidate(peer, signal.candidate);
+  if (normalizedSignal.type === "candidate") {
+    await handleCandidate(peer, normalizedSignal.candidate);
   }
+}
+
+function normalizeSignalPayload(signal) {
+  const type = String(signal?.type || "").toLowerCase();
+  if (!type) return null;
+
+  if (type === "offer" || type === "answer") {
+    const desc = signal[type];
+    if (!desc || typeof desc !== "object") return null;
+
+    const normalized = {
+      type,
+      sdp: String(desc.sdp || "")
+    };
+    if (!normalized.sdp) return null;
+
+    return {
+      type,
+      [type]: normalized
+    };
+  }
+
+  if (type === "candidate") {
+    const candidate = signal.candidate;
+    if (!candidate || typeof candidate !== "object") return null;
+
+    return {
+      type,
+      candidate: {
+        candidate: String(candidate.candidate || ""),
+        sdpMid: candidate.sdpMid ?? null,
+        sdpMLineIndex:
+          Number.isFinite(candidate.sdpMLineIndex) && candidate.sdpMLineIndex >= 0
+            ? Number(candidate.sdpMLineIndex)
+            : null,
+        usernameFragment: candidate.usernameFragment ?? null
+      }
+    };
+  }
+
+  return null;
+}
+
+function serializeSessionDescription(description) {
+  if (!description || typeof description !== "object") return null;
+
+  const type = String(description.type || "").toLowerCase();
+  const sdp = String(description.sdp || "");
+  if (!type || !sdp) return null;
+
+  return { type, sdp };
+}
+
+function serializeIceCandidate(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+
+  if (typeof candidate.toJSON === "function") {
+    const json = candidate.toJSON();
+    if (json && typeof json === "object") {
+      return {
+        candidate: String(json.candidate || ""),
+        sdpMid: json.sdpMid ?? null,
+        sdpMLineIndex:
+          Number.isFinite(json.sdpMLineIndex) && json.sdpMLineIndex >= 0
+            ? Number(json.sdpMLineIndex)
+            : null,
+        usernameFragment: json.usernameFragment ?? null
+      };
+    }
+  }
+
+  return {
+    candidate: String(candidate.candidate || ""),
+    sdpMid: candidate.sdpMid ?? null,
+    sdpMLineIndex:
+      Number.isFinite(candidate.sdpMLineIndex) && candidate.sdpMLineIndex >= 0
+        ? Number(candidate.sdpMLineIndex)
+        : null,
+    usernameFragment: candidate.usernameFragment ?? null
+  };
 }
 
 async function handleOffer(peer, fromId, offer) {
@@ -1437,12 +1525,17 @@ async function handleOffer(peer, fromId, offer) {
     const answer = await peer.pc.createAnswer();
     await peer.pc.setLocalDescription(answer);
 
+    const serializedAnswer = serializeSessionDescription(peer.pc.localDescription);
+    if (!serializedAnswer) {
+      return;
+    }
+
     send({
       type: "signal",
       targetId: fromId,
       signal: {
         type: "answer",
-        answer: peer.pc.localDescription
+        answer: serializedAnswer
       }
     });
   } catch (err) {

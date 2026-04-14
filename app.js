@@ -2069,9 +2069,13 @@ function toggleRemoteFullscreen() {
 }
 
 async function setRemoteFullscreen(nextState) {
+  const enteringMobileFullscreen = Boolean(nextState) && isMobileViewport();
   isRemoteFullscreen = Boolean(nextState);
   if (!isRemoteFullscreen) {
     setChatCollapsed(false);
+  } else if (enteringMobileFullscreen) {
+    // Default to a compact chat state on phones so the stream remains visible.
+    setChatCollapsed(true);
   }
 
   if (isRemoteFullscreen) {

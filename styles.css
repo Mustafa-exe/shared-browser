@@ -561,7 +561,16 @@ video.can-control:focus {
   .toast-stack {
     right: calc(10px + env(safe-area-inset-right));
     bottom: calc(10px + env(safe-area-inset-bottom) + var(--keyboard-inset));
-    width: calc(100vw - 20px);
+    width: min(360px, calc(100vw - 20px));
+  }
+
+  .fullscreen-active .chat-wrap {
+    max-height: min(58vh, 400px);
+  }
+
+  .fullscreen-active .chat-wrap .chat-log {
+    min-height: 120px;
+    max-height: min(24vh, 170px);
   }
 
   .fullscreen-active.chat-open .toast-stack {
@@ -629,11 +638,12 @@ video.can-control:focus {
     width: min(340px, calc(100vw - 12px));
     right: calc(6px + env(safe-area-inset-right));
     bottom: calc(6px + env(safe-area-inset-bottom) + var(--keyboard-inset));
-    max-height: min(78vh, 520px);
+    max-height: min(52vh, 340px);
   }
 
   .fullscreen-active .chat-wrap .chat-log {
-    max-height: min(42vh, 280px);
+    min-height: 110px;
+    max-height: min(22vh, 150px);
   }
 
   .remote-card.is-fullscreen {

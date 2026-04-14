@@ -37,6 +37,7 @@ const els = {
   localVideoCard: document.getElementById("localVideoCard"),
   remoteVideoCard: document.getElementById("remoteVideoCard"),
   fullscreenBtn: document.getElementById("fullscreenBtn"),
+  audioUnlockBtn: document.getElementById("audioUnlockBtn"),
   localVideo: document.getElementById("localVideo"),
   remoteVideo: document.getElementById("remoteVideo"),
   onlineCount: document.getElementById("onlineCount"),
@@ -75,7 +76,7 @@ const db = getDatabase(firebaseApp);
 const clientId = createClientId();
 const shareModeStorageKey = "shared_browser_share_mode";
 let displayName = localStorage.getItem("shared_browser_name") || "guest";
-let selectedShareMode = sanitizeShareMode(localStorage.getItem(shareModeStorageKey) || "window");
+let selectedShareMode = sanitizeShareMode(localStorage.getItem(shareModeStorageKey) || "tab");
 let transportMode = "firebase";
 let realtimeReady = false;
 let roomMetaRef = null;
@@ -145,6 +146,9 @@ function bootstrap() {
   els.releaseControlBtn.addEventListener("click", () => releaseControlAccess());
   els.revokeControlBtn.addEventListener("click", () => revokeControlAccess());
   els.fullscreenBtn.addEventListener("click", () => toggleRemoteFullscreen());
+  els.audioUnlockBtn.addEventListener("click", () => {
+    void playRemoteStreamWithAudio(true, true);
+  });
   els.chatToggleBtn.addEventListener("click", () => {
     setChatCollapsed(!isChatCollapsed);
   });
@@ -161,7 +165,7 @@ function bootstrap() {
   });
 
   els.shareModeSelect.addEventListener("change", () => {
-    selectedShareMode = sanitizeShareMode(els.shareModeSelect.value || "window");
+    selectedShareMode = sanitizeShareMode(els.shareModeSelect.value || "tab");
     els.shareModeSelect.value = selectedShareMode;
     localStorage.setItem(shareModeStorageKey, selectedShareMode);
   });
@@ -1610,9 +1614,15 @@ async function startShare() {
     if (hasAudio) {
       setStreamState(`You are live (${shareModeLabel(selectedShareMode)} + audio). Viewers should see your screen and hear audio.`);
     } else {
-      setStreamState(
-        `You are live (${shareModeLabel(selectedShareMode)}). Viewers should see your screen. Audio may not be available for this source/browser.`
-      );
+      if (selectedShareMode !== "tab") {
+        setStreamState(
+          "You are live, but no audio track was captured. Switch to Browser Tab mode and enable Share tab audio for reliable sound."
+        );
+      } else {
+        setStreamState(
+          "You are live, but tab audio is missing. Re-share and ensure the Share tab audio checkbox is enabled."
+        );
+      }
     }
 
     const [videoTrack] = stream.getVideoTracks();
@@ -1666,7 +1676,8 @@ function buildShareConstraintOptions(mode) {
   const screenAudio = {
     echoCancellation: false,
     noiseSuppression: false,
-    autoGainControl: false
+    autoGainControl: false,
+    suppressLocalAudioPlayback: false
   };
 
   if (mode === "window") {
@@ -1688,14 +1699,16 @@ function buildShareConstraintOptions(mode) {
           displaySurface: "window"
         },
         audio: true,
-        systemAudio: "include"
+        systemAudio: "include",
+        suppressLocalAudioPlayback: false
       },
       {
         video: {
           ...frameRate
         },
         audio: true,
-        systemAudio: "include"
+        systemAudio: "include",
+        suppressLocalAudioPlayback: false
       },
       {
         video: true,
@@ -1716,14 +1729,16 @@ function buildShareConstraintOptions(mode) {
           displaySurface: "monitor"
         },
         audio: screenAudio,
-        systemAudio: "include"
+        systemAudio: "include",
+        suppressLocalAudioPlayback: false
       },
       {
         video: {
           ...frameRate
         },
         audio: true,
-        systemAudio: "include"
+        systemAudio: "include",
+        suppressLocalAudioPlayback: false
       },
       {
         video: true,
@@ -1744,13 +1759,15 @@ function buildShareConstraintOptions(mode) {
       audio: screenAudio,
       systemAudio: "include",
       preferCurrentTab: true,
-      selfBrowserSurface: "include"
+      selfBrowserSurface: "include",
+      surfaceSwitching: "include"
     },
     {
       video: {
         ...frameRate
       },
-      audio: true
+      audio: true,
+      suppressLocalAudioPlayback: false
     },
     {
       video: true,
@@ -1795,6 +1812,7 @@ function stopShare(notify = true) {
 
 function clearRemoteVideo() {
   clearRemoteAudioUnlock();
+  setRemoteAudioUnlockVisible(false);
   els.remoteVideo.muted = true;
   els.remoteVideo.srcObject = null;
 }
@@ -1810,6 +1828,8 @@ function hasLiveAudioTrack(stream = null) {
 
 function bindRemoteAudioUnlock() {
   if (remoteAudioUnlockBound) return;
+
+  setRemoteAudioUnlockVisible(true);
 
   remoteAudioUnlockHandler = () => {
     void playRemoteStreamWithAudio(true, true);
@@ -1827,6 +1847,15 @@ function clearRemoteAudioUnlock() {
   window.removeEventListener("keydown", remoteAudioUnlockHandler, true);
   remoteAudioUnlockBound = false;
   remoteAudioUnlockHandler = null;
+  setRemoteAudioUnlockVisible(false);
+}
+
+function setRemoteAudioUnlockVisible(visible) {
+  if (!els.audioUnlockBtn) return;
+
+  const shouldShow = Boolean(visible && role === "viewer" && roomId);
+  els.audioUnlockBtn.hidden = !shouldShow;
+  els.audioUnlockBtn.disabled = !shouldShow;
 }
 
 async function playRemoteStreamWithAudio(expectAudio, forceUnmute = false) {
@@ -1834,6 +1863,7 @@ async function playRemoteStreamWithAudio(expectAudio, forceUnmute = false) {
 
   if (!expectAudio) {
     clearRemoteAudioUnlock();
+    setRemoteAudioUnlockVisible(false);
     els.remoteVideo.muted = true;
     const playPromise = els.remoteVideo.play?.();
     if (playPromise && typeof playPromise.catch === "function") {
@@ -1855,6 +1885,7 @@ async function playRemoteStreamWithAudio(expectAudio, forceUnmute = false) {
     try {
       await playPromise;
       clearRemoteAudioUnlock();
+      setRemoteAudioUnlockVisible(false);
       setStreamState("Receiving host stream with audio.");
       return;
     } catch {
@@ -1870,6 +1901,7 @@ async function playRemoteStreamWithAudio(expectAudio, forceUnmute = false) {
   }
 
   clearRemoteAudioUnlock();
+  setRemoteAudioUnlockVisible(false);
   setStreamState("Receiving host stream with audio.");
 }
 
@@ -1998,6 +2030,10 @@ function setRoleUi() {
 
   if (!canFullscreen && isRemoteFullscreen) {
     setRemoteFullscreen(false);
+  }
+
+  if (role !== "viewer") {
+    setRemoteAudioUnlockVisible(false);
   }
 
   updateControlUi();
@@ -2548,11 +2584,11 @@ function keepLiveVideoPlaying(event) {
 }
 
 function sanitizeShareMode(value) {
-  const next = String(value || "window").toLowerCase();
+  const next = String(value || "tab").toLowerCase();
   if (next === "tab" || next === "window" || next === "screen") {
     return next;
   }
-  return "window";
+  return "tab";
 }
 
 function shareModeLabel(mode) {

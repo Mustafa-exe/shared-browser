@@ -35,8 +35,8 @@
         <h2>Screen Share</h2>
         <div class="row">
           <select id="shareModeSelect" aria-label="Share mode">
-            <option value="window">Entire Window</option>
             <option value="tab">Browser Tab</option>
+            <option value="window">Entire Window</option>
             <option value="screen">Entire Screen</option>
           </select>
           <button id="startShareBtn" class="btn btn-primary">Start Screen Share</button>
@@ -68,7 +68,10 @@
         <div id="remoteVideoCard" class="video-card remote-card">
           <div class="video-head">
             <h3>Viewer Stream</h3>
-            <button id="fullscreenBtn" type="button" class="btn btn-ghost btn-sm">Fullscreen</button>
+            <div class="video-head-actions">
+              <button id="audioUnlockBtn" type="button" class="btn btn-primary btn-sm" hidden>Enable Audio</button>
+              <button id="fullscreenBtn" type="button" class="btn btn-ghost btn-sm">Fullscreen</button>
+            </div>
           </div>
           <video id="remoteVideo" autoplay playsinline tabindex="0" aria-label="Viewer stream control surface"></video>
         </div>

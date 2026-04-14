@@ -277,6 +277,12 @@ body[data-role="viewer"] #localVideoCard {
   margin-bottom: 8px;
 }
 
+.video-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .video-head h3 {
   margin-bottom: 0;
 }
@@ -581,6 +587,11 @@ video.can-control:focus {
 
   .video-head {
     flex-wrap: wrap;
+  }
+
+  .video-head-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .video-head .btn {

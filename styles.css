@@ -8,6 +8,7 @@
   --primary: #22d3ee;
   --danger: #ef4444;
   --ok: #10b981;
+  --keyboard-inset: 0px;
 }
 
 * {
@@ -405,7 +406,7 @@ video.can-control:focus {
 .fullscreen-active .chat-wrap {
   position: fixed;
   right: calc(16px + env(safe-area-inset-right));
-  bottom: calc(16px + env(safe-area-inset-bottom));
+  bottom: calc(16px + env(safe-area-inset-bottom) + var(--keyboard-inset));
   width: min(360px, calc(100vw - 24px));
   max-height: min(72vh, 520px);
   z-index: 2200;
@@ -432,6 +433,15 @@ video.can-control:focus {
 
 .fullscreen-active .chat-wrap #chatForm {
   margin: 0;
+}
+
+.fullscreen-active.mobile-keyboard-open .chat-wrap {
+  max-height: min(42vh, 260px);
+}
+
+.fullscreen-active.mobile-keyboard-open .chat-wrap .chat-log {
+  min-height: 96px;
+  max-height: min(18vh, 140px);
 }
 
 .chat-wrap.is-collapsed .chat-log,
@@ -550,7 +560,7 @@ video.can-control:focus {
   .fullscreen-active .chat-wrap,
   .toast-stack {
     right: calc(10px + env(safe-area-inset-right));
-    bottom: calc(10px + env(safe-area-inset-bottom));
+    bottom: calc(10px + env(safe-area-inset-bottom) + var(--keyboard-inset));
     width: calc(100vw - 20px);
   }
 
@@ -618,7 +628,7 @@ video.can-control:focus {
   .fullscreen-active .chat-wrap {
     width: min(340px, calc(100vw - 12px));
     right: calc(6px + env(safe-area-inset-right));
-    bottom: calc(6px + env(safe-area-inset-bottom));
+    bottom: calc(6px + env(safe-area-inset-bottom) + var(--keyboard-inset));
     max-height: min(78vh, 520px);
   }
 
@@ -676,7 +686,7 @@ video.can-control:focus {
   .fullscreen-active.mobile-landscape-fullscreen .chat-wrap {
     top: calc(8px + env(safe-area-inset-top));
     right: calc(8px + env(safe-area-inset-right));
-    bottom: calc(8px + env(safe-area-inset-bottom));
+    bottom: calc(8px + env(safe-area-inset-bottom) + var(--keyboard-inset));
     width: min(360px, 42vw);
     max-height: none;
     display: grid;
@@ -693,5 +703,13 @@ video.can-control:focus {
     right: calc(min(360px, 42vw) + 18px + env(safe-area-inset-right));
     bottom: calc(10px + env(safe-area-inset-bottom));
     width: min(300px, 36vw);
+  }
+
+  .fullscreen-active.mobile-landscape-fullscreen.mobile-keyboard-open .chat-wrap {
+    width: min(320px, 40vw);
+  }
+
+  .fullscreen-active.mobile-landscape-fullscreen.mobile-keyboard-open .chat-wrap .chat-log {
+    max-height: min(24vh, 130px);
   }
 }

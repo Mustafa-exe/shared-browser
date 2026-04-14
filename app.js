@@ -121,6 +121,7 @@ let remoteFullscreenOrientationLocked = false;
 const streamSyncRetryDelayMs = 2800;
 const streamSyncRetryMax = 6;
 const realtimeEventBufferLimit = 400;
+const mobileKeyboardThresholdPx = 80;
 
 const peers = new Map();
 const participantNames = new Map();
@@ -180,6 +181,14 @@ function bootstrap() {
   document.addEventListener("fullscreenchange", onDocumentFullscreenChange);
   window.addEventListener("orientationchange", syncMobileFullscreenLayout);
   window.addEventListener("resize", syncMobileFullscreenLayout);
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", updateMobileKeyboardMetrics);
+    window.visualViewport.addEventListener("scroll", updateMobileKeyboardMetrics);
+  }
+
+  document.addEventListener("focusin", onGlobalFocusChange, true);
+  document.addEventListener("focusout", onGlobalFocusChange, true);
 
   setStatus("Connecting...", false);
   setRoleUi();
@@ -2087,6 +2096,7 @@ function applyRemoteFullscreenUi() {
   els.chatToggleBtn.hidden = !isRemoteFullscreen || mobileFullscreenMode;
   syncOverlayState();
   syncMobileFullscreenLayout();
+  updateMobileKeyboardMetrics();
 }
 
 function isMobileViewport() {
@@ -2097,6 +2107,33 @@ function syncMobileFullscreenLayout() {
   const useLandscapeLayout =
     isRemoteFullscreen && isMobileViewport() && window.matchMedia("(orientation: landscape)").matches;
   document.body.classList.toggle("mobile-landscape-fullscreen", useLandscapeLayout);
+}
+
+function isChatInputFocused() {
+  return document.activeElement === els.chatInput;
+}
+
+function onGlobalFocusChange() {
+  window.setTimeout(() => {
+    updateMobileKeyboardMetrics();
+  }, 0);
+}
+
+function updateMobileKeyboardMetrics() {
+  let keyboardInset = 0;
+  let keyboardOpen = false;
+
+  if (isRemoteFullscreen && isMobileViewport() && isChatInputFocused()) {
+    if (window.visualViewport) {
+      const viewport = window.visualViewport;
+      keyboardInset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+    }
+
+    keyboardOpen = keyboardInset > mobileKeyboardThresholdPx;
+  }
+
+  document.body.style.setProperty("--keyboard-inset", `${Math.max(0, keyboardInset)}px`);
+  document.body.classList.toggle("mobile-keyboard-open", keyboardOpen);
 }
 
 function onDocumentFullscreenChange() {
@@ -2168,7 +2205,7 @@ function setChatCollapsed(nextState) {
   if (!isChatCollapsed) {
     resetChatIndicators();
     clearPopups();
-    if (isRemoteFullscreen) {
+    if (isRemoteFullscreen && !isMobileViewport()) {
       const focusPromise = els.chatInput.focus({ preventScroll: true });
       if (focusPromise && typeof focusPromise.catch === "function") {
         focusPromise.catch(() => {});
@@ -2177,6 +2214,7 @@ function setChatCollapsed(nextState) {
   }
 
   syncOverlayState();
+  updateMobileKeyboardMetrics();
 }
 
 function syncOverlayState() {
